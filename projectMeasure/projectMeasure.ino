@@ -69,91 +69,108 @@ void setup(void)
   delay(1000);
 }
 
+void linearGestures(sensors_event_t* linearData, unsigned long currentTime) {
 
-void checkLinearMotion(sensors_event_t* linearData, unsigned long currentTime)
-{
+  float threshold = 3; // m/s^2
 
-  float s = 10;   // speed threshold parameter in m/s
-  
-  // base case
-  if(prev.lastTime == 0)
-  {
-    prev.lastTime = currentTime;
-    return;
-  }
+  float x_accel = linearData->acceleration.x;
+  float y_accel = linearData->acceleration.x;
+  float z_accel = linearData->acceleration.z;
 
-  
-
-  double dt = (currentTime - prev.lastTime) / 1000.0; // in seconds
-
-  // v1 = v0 + a * t
-  // calc current velo
-  double vx = prev.lastVx + linearData->acceleration.x * dt;
-  double vy = prev.lastVy + linearData->acceleration.y * dt;
-  double vz = prev.lastVz + linearData->acceleration.z * dt;
+  if (x_accel > threshold) Serial.println("x positive");
+  if (x_accel < threshold) Serial.println("x negative");
+  if (y_accel > threshold) Serial.println("y positive");
+  if (y_accel < threshold) Serial.println("y negative");
+  if (z_accel > threshold) Serial.println("z positive");
+  if (z_accel < threshold) Serial.println("z negative");
 
 
-  // if after 1000 ms, reset all values for opportunity for new motions
-  if(prev.typeShit > 100)
-  {
-    backToZero();
-    vx = 0;
-    vy = 0;
-    vz = 0;
-    Serial.println("back to 0");
-  }
-
-  // d = v * t
-  // calc current displacement
-  double dx = vx * dt;
-  double dy = vy * dt;
-  double dz = vz * dt;
-
-  // update struct
-  prev.lastX += dx;
-  prev.lastY += dy;
-  prev.lastZ += dz;
-
-  // s = sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2) 
-  // calc speed
-  // double speed = sqrt(vx * vx + vy * vy + vz * vz);
-
-
-  // If moving quickly in x direction, print adjustment in pitch
-  if(fabs(vx) > s){
-    if(vx > 0)  Serial.println("Moving in positive x to increase pitch. Velocity: ");
-    else  Serial.println("Moving in negative x to decrease pitch. Velocity: ");
-
-    Serial.println(vx);
-    backToZero();
-  }
-
-  // If moving quickly in y direction, print adjustment in tempo
-  if(fabs(vy) > s){
-    if(vy > 0)  Serial.println("Moving in positive y to increase tempo. Velocity: ");
-    else  Serial.println("Moving in negative y to decrease tempo. Velocity: ");
-
-    Serial.println(vy);
-    backToZero();
-  }
-
-  // If moving quickly in z direction, print adjustment in volume
-  if(fabs(vz) > s){
-    if(vz > 0)  Serial.println("Moving in positive z to increase volume. Velocity: ");
-    else  Serial.println("Moving in negative z to decrease volume. Velocity: ");
-
-    Serial.println(vz);
-    backToZero();
-  }
-
-  // update struct
-  prev.lastVx = vx;
-  prev.lastVy = vy;
-  prev.lastVz = vz;
-  prev.lastTime = currentTime;
-
-  prev.typeShit++;
 }
+
+
+// void checkLinearMotion(sensors_event_t* linearData, unsigned long currentTime)
+// {
+
+//   float s = 10;   // speed threshold parameter in m/s
+  
+//   // base case
+//   if(prev.lastTime == 0)
+//   {
+//     prev.lastTime = currentTime;
+//     return;
+//   }
+
+
+//   // double dt = (currentTime - prev.lastTime) / 1000.0; // in seconds
+
+//   // v1 = v0 + a * t
+//   // calc current velo
+//   // double vx = prev.lastVx + linearData->acceleration.x * dt;
+//   // double vy = prev.lastVy + linearData->acceleration.y * dt;
+//   // double vz = prev.lastVz + linearData->acceleration.z * dt;
+
+
+//   // if after 1000 ms, reset all values for opportunity for new motions
+//   if(prev.typeShit > 100)
+//   {
+//     backToZero();
+//     vx = 0;
+//     vy = 0;
+//     vz = 0;
+//     Serial.println("back to 0");
+//   }
+
+//   d = v * t
+//   calc current displacement
+//   double dx = vx * dt;
+//   double dy = vy * dt;
+//   double dz = vz * dt;
+
+//   update struct
+//   prev.lastX += dx;
+//   prev.lastY += dy;
+//   prev.lastZ += dz;
+
+//   // s = sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2) 
+//   // calc speed
+//   // double speed = sqrt(vx * vx + vy * vy + vz * vz);
+
+
+//   // If moving quickly in x direction, print adjustment in pitch
+//   if(fabs(vx) > s){
+//     if(vx > 0)  Serial.println("Moving in positive x to increase pitch. Velocity: ");
+//     else  Serial.println("Moving in negative x to decrease pitch. Velocity: ");
+
+//     Serial.println(vx);
+//     backToZero();
+//   }
+
+//   // If moving quickly in y direction, print adjustment in tempo
+//   if(fabs(vy) > s){
+//     if(vy > 0)  Serial.println("Moving in positive y to increase tempo. Velocity: ");
+//     else  Serial.println("Moving in negative y to decrease tempo. Velocity: ");
+
+//     Serial.println(vy);
+//     backToZero();
+//   }
+
+//   // If moving quickly in z direction, print adjustment in volume
+//   if(fabs(vz) > s){
+//     if(vz > 0)  Serial.println("Moving in positive z to increase volume. Velocity: ");
+//     else  Serial.println("Moving in negative z to decrease volume. Velocity: ");
+
+//     Serial.println(vz);
+//     backToZero();
+//   }
+
+//   // update struct
+//   prev.lastVx = vx;
+//   prev.lastVy = vy;
+//   prev.lastVz = vz;
+//   prev.lastTime = currentTime;
+
+//   prev.typeShit++;
+// }
 
 
 // main loop (kinda copied it  from the original adafruit code)
@@ -163,7 +180,7 @@ void loop(void) {
   // lin accel
   sensors_event_t linearData;
   bno.getEvent(&linearData, Adafruit_BNO055::VECTOR_LINEARACCEL);
-  checkLinearMotion(&linearData, now);
+  linearGestures(&linearData, now);
 
   delay(BNO055_SAMPLERATE_DELAY_MS);
 }
