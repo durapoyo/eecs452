@@ -136,7 +136,7 @@ void classifyGesture(sensors_event_t* gyroData, unsigned long currentTime) {
   const bool rightHanded = true;  // change to false for left-handed users
 
   // --- Base parameters ---
-  const float smallPrepThresh = 4.0;    // ambik lajak
+  const float smallPrepThresh = 4.5;    // ambik lajak
   const float bigPushBase     = 7.0;    // base strong push
   const float stopThresh      = 0.3;
   const unsigned long debounce = 800;
@@ -157,29 +157,29 @@ void classifyGesture(sensors_event_t* gyroData, unsigned long currentTime) {
     if (rollRate < -smallPrepThresh) {
       rollState = "PREP_LEFT";
       lastGestureTime = currentTime;
-      Serial.println("Prep LEFT");
+      //Serial.println("Prep LEFT");
     } 
     else if (rollRate > smallPrepThresh) {
       rollState = "PREP_RIGHT";
       lastGestureTime = currentTime;
-      Serial.println("Prep RIGHT");
+      //Serial.println("Prep RIGHT");
     }
     if (pitchRate < -smallPrepThresh) {
       rollState = "PREP_DOWN";
       lastGestureTime = currentTime;
-      Serial.println("Prep DOWN");
+      //Serial.println("Prep DOWN");
     } 
     else if (pitchRate > smallPrepThresh) {
       rollState = "PREP_UP";
       lastGestureTime = currentTime;
-      Serial.println("Prep UP");
+      //Serial.println("Prep UP");
     }
   }
 
   else if (rollState == "PREP_LEFT") {
     // wait for follow-up strong RIGHT roll
     if (rollRate > bigPushRight && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Increase Tempo 🎵");
+      Serial.println("🎵 Increase TEMPO 🎵");
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
@@ -191,7 +191,7 @@ void classifyGesture(sensors_event_t* gyroData, unsigned long currentTime) {
   else if (rollState == "PREP_RIGHT") {
     // wait for follow-up strong LEFT roll
     if (rollRate < -bigPushLeft && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Decrease tempo 🎵");
+      Serial.println("🎵 Decrease TEMPO 🎵");
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
@@ -203,7 +203,7 @@ void classifyGesture(sensors_event_t* gyroData, unsigned long currentTime) {
   else if (rollState == "PREP_DOWN") {
     // wait for follow-up strong RIGHT roll
     if (pitchRate > bigPushRight && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Increase Volume 🎵");
+      Serial.println("🎵 Increase VOLUME 🎵");
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
@@ -215,7 +215,7 @@ void classifyGesture(sensors_event_t* gyroData, unsigned long currentTime) {
   else if (rollState == "PREP_UP") {
     // wait for follow-up strong LEFT roll
     if (pitchRate < -bigPushLeft && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Decrease Volume 🎵");
+      Serial.println("🎵 Decrease VOLUME 🎵");
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
