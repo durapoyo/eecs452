@@ -34,6 +34,18 @@ struct PrevState
 PrevState prev;
 
 
+void backToZero(void)
+{
+  prev.lastVx = 0;
+  prev.lastVy = 0;
+  prev.lastVz = 0;
+  prev.lastX = 0;
+  prev.lastY = 0;
+  prev.lastZ = 0;
+  prev.typeShit = 0;
+}
+
+
 void setup(void)
 {
   Serial.begin(115200);
@@ -82,14 +94,13 @@ void checkLinearMotion(sensors_event_t* linearData, unsigned long currentTime)
 
 
   // if after 1000 ms, reset all values for opportunity for new motions
-  if(prev.typeShit > 1000){
-    prev.typeShit = 0;
-    prev.lastVx = 0;
-    prev.lastVy = 0;
-    prev.lastVz = 0;
+  if(prev.typeShit > 100)
+  {
+    backToZero();
     vx = 0;
     vy = 0;
     vz = 0;
+    Serial.println("back to 0");
   }
 
   // d = v * t
@@ -114,6 +125,7 @@ void checkLinearMotion(sensors_event_t* linearData, unsigned long currentTime)
     else  Serial.println("Moving in negative x to decrease pitch. Velocity: ");
 
     Serial.println(vx);
+    backToZero();
   }
 
   // If moving quickly in y direction, print adjustment in tempo
@@ -122,6 +134,7 @@ void checkLinearMotion(sensors_event_t* linearData, unsigned long currentTime)
     else  Serial.println("Moving in negative y to decrease tempo. Velocity: ");
 
     Serial.println(vy);
+    backToZero();
   }
 
   // If moving quickly in z direction, print adjustment in volume
@@ -130,6 +143,7 @@ void checkLinearMotion(sensors_event_t* linearData, unsigned long currentTime)
     else  Serial.println("Moving in negative z to decrease volume. Velocity: ");
 
     Serial.println(vz);
+    backToZero();
   }
 
   // update struct
