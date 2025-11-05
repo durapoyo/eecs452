@@ -49,7 +49,7 @@ int linearGestures(sensors_event_t* linearData, unsigned long currentTime)
 {
 
   // gen vals
-  float threshold = 3; // m/s^2
+  float threshold = 6; // m/s^2
 
   float x_accel = linearData->acceleration.x;
   float y_accel = linearData->acceleration.y;
@@ -111,13 +111,14 @@ int linearGestures(sensors_event_t* linearData, unsigned long currentTime)
   }
 }
 
-void classifyGesture(sensors_event_t* gyroData, unsigned long currentTime) {
+void gyroGestures(sensors_event_t* gyroData, unsigned long currentTime) {
   static String rollState = "IDLE";
   static unsigned long lastGestureTime = 0;
 
   float rollRate = gyroData->gyro.x;  // rad/s
   float pitchRate = gyroData->gyro.y;
   float yawRate = gyroData->gyro.z;
+
 
   // --- User preference ---
   const bool rightHanded = true;  // change to false for left-handed users
@@ -215,6 +216,7 @@ void classifyGesture(sensors_event_t* gyroData, unsigned long currentTime) {
   if (fabs(rollRate) < stopThresh && (currentTime - lastGestureTime > debounce)) {
     if (rollState != "IDLE") rollState = "IDLE";
   }
+
 }
 
 
@@ -229,10 +231,23 @@ void loop(void) {
   bno.getEvent(&gyro, Adafruit_BNO055::VECTOR_GYROSCOPE);
 
   // if gesture detected, wait
-  classifyGesture(&gyro, now);
-  if(linearGestures(&lin, now) != 0){
-    // delay(2000);
+
+  float rollRate = gyro.gyro.x; 
+  float pitchRate = gyro.gyro.y;
+  float yawRate = gyro.gyro.z;
+
+  float s = 3;
+
+  if (fabs(rollRate) < s && fabs(pitchRate) < s && fabs(yawRate) < s) {
+    if(linearGestures(&lin, now) != 0) delay(500);
   }
+  else {
+    gyroGestures(&gyro, now);
+  }
+
+  //if(linearGestures(&lin, now) != 0){
+    // delay(2000);
+  //}
 
   delay(BNO055_SAMPLERATE_DELAY_MS);
 }
