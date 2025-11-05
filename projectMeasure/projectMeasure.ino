@@ -71,18 +71,18 @@ void setup(void)
 
 void linearGestures(sensors_event_t* linearData, unsigned long currentTime) {
 
-  float threshold = 3; // m/s^2
+  float threshold = 10; // m/s^2
 
   float x_accel = linearData->acceleration.x;
   float y_accel = linearData->acceleration.x;
   float z_accel = linearData->acceleration.z;
 
   if (x_accel > threshold) Serial.println("x positive");
-  if (x_accel < threshold) Serial.println("x negative");
-  if (y_accel > threshold) Serial.println("y positive");
-  if (y_accel < threshold) Serial.println("y negative");
-  if (z_accel > threshold) Serial.println("z positive");
-  if (z_accel < threshold) Serial.println("z negative");
+  else if (x_accel < -threshold) Serial.println("x negative");
+  else if (y_accel > threshold) Serial.println("y positive");
+  else if (y_accel < -threshold) Serial.println("y negative");
+  else if (z_accel > threshold) Serial.println("z positive");
+  else if (z_accel < -threshold) Serial.println("z negative");
 
 
 }
@@ -178,9 +178,19 @@ void loop(void) {
   unsigned long now = millis();
 
   // lin accel
-  sensors_event_t linearData;
-  bno.getEvent(&linearData, Adafruit_BNO055::VECTOR_LINEARACCEL);
-  linearGestures(&linearData, now);
+  sensors_event_t lin;
+  bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL);
+  linearGestures(&lin, now);
+
+
+  // Serial.print(lin.acceleration.x, 4);
+  // Serial.print(" ");
+  // Serial.print(lin.acceleration.y, 4);
+  // Serial.print(" ");
+  // Serial.print(lin.acceleration.z, 4);
+  // Serial.println();
+
+
 
   delay(BNO055_SAMPLERATE_DELAY_MS);
 }
