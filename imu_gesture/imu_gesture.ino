@@ -3,7 +3,24 @@
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
 
+#include <Audio.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SerialFlash.h>
 
+AudioPlaySdWav           playSdWav1;
+AudioOutputI2S           i2s1;
+AudioConnection          patchCord1(playSdWav1, 0, i2s1, 0);
+AudioConnection          patchCord2(playSdWav1, 1, i2s1, 1);
+AudioControlSGTL5000     sgtl5000_1;
+
+// SD card pins for Teensy 4.1 built-in slot
+#define SDCARD_CS_PIN    BUILTIN_SDCARD
+#define SDCARD_MOSI_PIN  11  // not actually used
+#define SDCARD_SCK_PIN   13  // not actually used
+
+float volumeLevel = 0.5;  // Range: 0.0 to 1.0
 /*
 Code to classify linear gestures from the IMU based on acceleration values.
 */
@@ -14,7 +31,7 @@ uint16_t BNO055_SAMPLERATE_DELAY_MS = 100;
 
 // Check I2C device address and correct line below (by default address is 0x29 or 0x28)
 //                                   id, address
-Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire2);
 
 
 void setup(void)
@@ -35,6 +52,20 @@ void setup(void)
     Serial.println("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
     while (1);
   }
+
+  AudioMemory(8);
+  sgtl5000_1.enable();
+  sgtl5000_1.volume(volumeLevel);
+
+  SPI.setMOSI(SDCARD_MOSI_PIN);
+  SPI.setSCK(SDCARD_SCK_PIN);
+
+  if (!SD.begin(SDCARD_CS_PIN)) {
+    Serial.println("Unable to access the SD card!");
+    while (1) delay(500);
+  }
+
+  playSdWav1.play("test.wav");
 
 
   delay(1000);
@@ -167,7 +198,14 @@ void gyroGestures(sensors_event_t* gyroData, unsigned long currentTime) {
   else if (rollState == "PREP_LEFT") {
     // wait for follow-up strong RIGHT roll
     if (rollRate > bigPushRight && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Increase TEMPO 🎵");
+      // Serial.println("🎵 Increase TEMPO 🎵");
+
+      volumeLevel += 0.05;
+      if (volumeLevel > 1.0) volumeLevel = 1.0;
+      sgtl5000_1.volume(volumeLevel);
+      Serial.print("Volume up: ");
+      Serial.println(volumeLevel, 2);
+      
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
@@ -179,7 +217,14 @@ void gyroGestures(sensors_event_t* gyroData, unsigned long currentTime) {
   else if (rollState == "PREP_RIGHT") {
     // wait for follow-up strong LEFT roll
     if (rollRate < -bigPushLeft && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Decrease TEMPO 🎵");
+      // Serial.println("🎵 Decrease TEMPO 🎵");
+
+      volumeLevel -= 0.05;
+      if (volumeLevel < 0.0) volumeLevel = 0.0;
+      sgtl5000_1.volume(volumeLevel);
+      Serial.print("Volume down: ");
+      Serial.println(volumeLevel, 2);
+
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
@@ -236,7 +281,7 @@ void loop(void) {
   float pitchRate = gyro.gyro.y;
   float yawRate = gyro.gyro.z;
 
-  float s = 3;
+  float s = 2;
 
   if (fabs(rollRate) < s && fabs(pitchRate) < s && fabs(yawRate) < s) {
     if(linearGestures(&lin, now) != 0) delay(500);
