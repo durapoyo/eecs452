@@ -9,6 +9,12 @@
 #include <SD.h>
 #include <SerialFlash.h>
 
+enum GestureMode { IDLE, LINEAR_ACTIVE, GYRO_ACTIVE };
+GestureMode currentMode = IDLE;
+
+unsigned long gestureStartTime = 0;
+const unsigned long gestureDuration = 500; // lockout time in ms
+
 
 AudioPlaySdWav           playSdWav1;
 AudioEffectGranular      granular1;
@@ -291,6 +297,65 @@ void gyroGestures(sensors_event_t* gyroData, unsigned long currentTime) {
 }
 
 
+void handleGestures(sensors_event_t* lin, sensors_event_t* gyro, unsigned long now) {
+
+  switch (currentMode) {
+
+    case IDLE: {
+      // --- Detect whether motion is linear or rotational first ---
+      float rollRate = gyro->gyro.x;
+      float pitchRate = gyro->gyro.y;
+      float yawRate = gyro->gyro.z;
+      float gyroMag = sqrt(rollRate*rollRate + pitchRate*pitchRate + yawRate*yawRate);
+
+      float accelMag = sqrt(
+        lin->acceleration.x * lin->acceleration.x +
+        lin->acceleration.y * lin->acceleration.y +
+        lin->acceleration.z * lin->acceleration.z);
+
+      // thresholds to choose gesture type
+      const float gyroThreshold = 3.5;   // rad/s
+      const float accelThreshold = 4.0;  // m/s^2
+
+      if (gyroMag > gyroThreshold) {
+        currentMode = GYRO_ACTIVE;
+        gestureStartTime = now;
+        Serial.println("[STATE] Gyro gesture started");
+      } 
+      else if (accelMag > accelThreshold) {
+        currentMode = LINEAR_ACTIVE;
+        gestureStartTime = now;
+        Serial.println("[STATE] Linear gesture started");
+      }
+      break;
+    }
+
+    case LINEAR_ACTIVE: {
+      linearGestures(lin, now);
+
+      // after 500 ms, return to idle
+      if (now - gestureStartTime > gestureDuration) {
+        currentMode = IDLE;
+        Serial.println("[STATE] Back to IDLE");
+      }
+      break;
+    }
+
+    case GYRO_ACTIVE: {
+      gyroGestures(gyro, now);
+
+      // after 500 ms, return to idle
+      if (now - gestureStartTime > gestureDuration) {
+        currentMode = IDLE;
+        Serial.println("[STATE] Back to IDLE");
+      }
+      break;
+    }
+  }
+}
+
+
+
 // main loop (kinda copied it  from the original adafruit code)
 void loop(void) {
   unsigned long now = millis();
@@ -301,24 +366,7 @@ void loop(void) {
   bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL);
   bno.getEvent(&gyro, Adafruit_BNO055::VECTOR_GYROSCOPE);
 
-  // if gesture detected, wait
-
-  float rollRate = gyro.gyro.x; 
-  float pitchRate = gyro.gyro.y;
-  float yawRate = gyro.gyro.z;
-
-  float s = 1.5;
-
-  if (fabs(rollRate) < s && fabs(pitchRate) < s && fabs(yawRate) < s) {
-    if(linearGestures(&lin, now) != 0) delay(500);
-  }
-  else {
-    gyroGestures(&gyro, now);
-  }
-
-  //if(linearGestures(&lin, now) != 0){
-    // delay(2000);
-  //}
+  handleGestures(&lin, &gyro, now);
 
   delay(BNO055_SAMPLERATE_DELAY_MS);
 }
