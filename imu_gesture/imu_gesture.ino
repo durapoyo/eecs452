@@ -9,11 +9,15 @@
 #include <SD.h>
 #include <SerialFlash.h>
 
+
 AudioPlaySdWav           playSdWav1;
+AudioEffectGranular      granular1;
 AudioOutputI2S           i2s1;
-AudioConnection          patchCord1(playSdWav1, 0, i2s1, 0);
-AudioConnection          patchCord2(playSdWav1, 1, i2s1, 1);
+AudioConnection          patchCord1(playSdWav1, 0, granular1, 0);
+AudioConnection          patchCord2(granular1, 0, i2s1, 0);
+AudioConnection          patchCord3(playSdWav1, 1, i2s1, 1);
 AudioControlSGTL5000     sgtl5000_1;
+
 
 // SD card pins for Teensy 4.1 built-in slot
 #define SDCARD_CS_PIN    BUILTIN_SDCARD
@@ -21,6 +25,9 @@ AudioControlSGTL5000     sgtl5000_1;
 #define SDCARD_SCK_PIN   13  // not actually used
 
 float volumeLevel = 0.5;  // Range: 0.0 to 1.0
+float pitchShift = 1.0;   
+const int GRAIN_MEMORY = 12800;
+int16_t granularMemory[GRAIN_MEMORY]; 
 /*
 Code to classify linear gestures from the IMU based on acceleration values.
 */
@@ -57,6 +64,9 @@ void setup(void)
   sgtl5000_1.enable();
   sgtl5000_1.volume(volumeLevel);
 
+  granular1.begin(granularMemory, GRAIN_MEMORY);
+  granular1.setSpeed(pitchShift); 
+
   SPI.setMOSI(SDCARD_MOSI_PIN);
   SPI.setSCK(SDCARD_SCK_PIN);
 
@@ -66,6 +76,8 @@ void setup(void)
   }
 
   playSdWav1.play("test.wav");
+  delay(10);
+  granular1.beginPitchShift(20);
 
 
   delay(1000);
@@ -236,7 +248,14 @@ void gyroGestures(sensors_event_t* gyroData, unsigned long currentTime) {
   else if (rollState == "PREP_DOWN") {
     // wait for follow-up strong RIGHT roll
     if (pitchRate > bigPushRight && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Increase VOLUME 🎵");
+      //Serial.println("🎵 Increase VOLUME 🎵");
+
+      pitchShift += 1;
+      if (pitchShift > 4.0) pitchShift = 4.0; 
+      granular1.setSpeed(pitchShift);
+      Serial.print("Pitch up: ");
+      Serial.println(pitchShift, 2);
+
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
@@ -248,7 +267,14 @@ void gyroGestures(sensors_event_t* gyroData, unsigned long currentTime) {
   else if (rollState == "PREP_UP") {
     // wait for follow-up strong LEFT roll
     if (pitchRate < -bigPushLeft && (currentTime - lastGestureTime < comboWindow)) {
-      Serial.println("🎵 Decrease VOLUME 🎵");
+      //Serial.println("🎵 Decrease VOLUME 🎵");
+
+      pitchShift -= 1;
+      if (pitchShift < 0.25) pitchShift = 0.25; 
+      granular1.setSpeed(pitchShift);
+      Serial.print("Pitch down: ");
+      Serial.println(pitchShift, 2);
+
       rollState = "IDLE";
       lastGestureTime = currentTime;
     } 
@@ -281,7 +307,7 @@ void loop(void) {
   float pitchRate = gyro.gyro.y;
   float yawRate = gyro.gyro.z;
 
-  float s = 2;
+  float s = 1.5;
 
   if (fabs(rollRate) < s && fabs(pitchRate) < s && fabs(yawRate) < s) {
     if(linearGestures(&lin, now) != 0) delay(500);
