@@ -4,80 +4,98 @@
 #include <SD.h>
 #include <SerialFlash.h>
 
+// === AUDIO OBJECTS ===
 AudioPlaySdWav           playSdWav1;
-AudioEffectGranular      granular1;
+AudioEffectGranular      granularLeft;
+AudioEffectGranular      granularRight;
 AudioOutputI2S           i2s1;
-AudioConnection          patchCord1(playSdWav1, 0, granular1, 0);
-AudioConnection          patchCord2(granular1, 0, i2s1, 0);
-AudioConnection          patchCord3(playSdWav1, 1, i2s1, 1);
+
+// Patch: WAV L→granularLeft→L-out, WAV R→granularRight→R-out
+AudioConnection          patchCord1(playSdWav1, 0, granularLeft, 0);
+AudioConnection          patchCord2(playSdWav1, 1, granularRight, 0);
+AudioConnection          patchCord3(granularLeft, 0, i2s1, 0);
+AudioConnection          patchCord4(granularRight, 0, i2s1, 1);
+
 AudioControlSGTL5000     sgtl5000_1;
 
-#define SDCARD_CS_PIN    BUILTIN_SDCARD
+#define SDCARD_CS_PIN BUILTIN_SDCARD
+#define GRAIN_MEMORY 12800
 
-float volumeLevel = 0.5;
-float pitchShift = 1.0;   
-const int GRAIN_MEMORY = 12800;
-int16_t granularMemory[GRAIN_MEMORY]; 
+// === GLOBAL VARIABLES ===
+int16_t granularMemoryL[GRAIN_MEMORY];
+int16_t granularMemoryR[GRAIN_MEMORY];
 
+float volumeLevel = 0.6;
+float pitchShift = 1.0;   // shared pitch for both channels
+
+// === SETUP ===
 void setup() {
   Serial.begin(9600);
-  while (!Serial) ; 
-  Serial.println("=== Teensy Real-Time Pitch Shifter ===");
+  while (!Serial); // Wait for serial monitor
+  
+  Serial.println("=== Stereo Pitch Shifter ===");
   Serial.println("Commands:");
-  Serial.println("  p : Play WAV (sound2.wav)");
+  Serial.println("  p : Play 'sound2.wav'");
+  Serial.println("  s : Stop playback");
   Serial.println("  + : Increase pitch");
   Serial.println("  - : Decrease pitch");
-  Serial.println("  s : Stop playback");
-  Serial.println("----------------------------");
+  Serial.println("------------------------------------");
 
-  AudioMemory(20);
+  AudioMemory(30);
   sgtl5000_1.enable();
   sgtl5000_1.volume(volumeLevel);
 
-  granular1.begin(granularMemory, GRAIN_MEMORY);
-  granular1.setSpeed(pitchShift); 
+  granularLeft.begin(granularMemoryL, GRAIN_MEMORY);
+  granularRight.begin(granularMemoryR, GRAIN_MEMORY);
 
   if (!SD.begin(SDCARD_CS_PIN)) {
     Serial.println("Unable to access SD card!");
     while (1) delay(500);
   }
 
-  Serial.println("Ready! Type 'p' to play.");
+  Serial.println("Ready! Type 'p' to start playback.");
 }
 
-
+// === LOOP ===
 void loop() {
   if (Serial.available()) {
-    char command = Serial.read();
+    char cmd = Serial.read();
 
-    if (command == 'p') {
+    if (cmd == 'p') {
       if (!playSdWav1.isPlaying()) {
-        Serial.println("Playing sound2.wav...");
-        playSdWav1.play("sound2.wav");
+        Serial.println("Playing 'song2.wav'...");
+        playSdWav1.play("song3.wav");
         delay(10);
-        granular1.beginPitchShift(20);
+        granularLeft.beginPitchShift(20);
+        granularRight.beginPitchShift(20);
+        granularLeft.setSpeed(pitchShift);
+        granularRight.setSpeed(pitchShift);
       } else {
         Serial.println("Already playing...");
       }
     }
-    else if (command == 's') {
+
+    else if (cmd == 's') {
       playSdWav1.stop();
-      granular1.stop();
-      Serial.println("Stopped.");
+      granularLeft.stop();
+      granularRight.stop();
+      Serial.println("Stopped playback.");
     }
-    else if (command == '+') {
+
+    else if (cmd == '+') {
       pitchShift += 0.1;
-      if (pitchShift > 4.0) pitchShift = 4.0; 
-      granular1.setSpeed(pitchShift);
-      Serial.print("Pitch up: ");
-      Serial.println(pitchShift, 2);
+      if (pitchShift > 2.5) pitchShift = 2.5;
+      granularLeft.setSpeed(pitchShift);
+      granularRight.setSpeed(pitchShift);
+      Serial.printf("Pitch up → %.2f\n", pitchShift);
     }
-    else if (command == '-') {
+
+    else if (cmd == '-') {
       pitchShift -= 0.1;
-      if (pitchShift < 0.25) pitchShift = 0.25;
-      granular1.setSpeed(pitchShift);
-      Serial.print("Pitch down: ");
-      Serial.println(pitchShift, 2);
+      if (pitchShift < 0.30) pitchShift = 0.30;
+      granularLeft.setSpeed(pitchShift);
+      granularRight.setSpeed(pitchShift);
+      Serial.printf("Pitch down → %.2f\n", pitchShift);
     }
   }
 
