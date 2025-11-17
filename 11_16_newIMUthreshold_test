@@ -1,0 +1,369 @@
+// === Fixed Teensy Stereo Audio + IMU Gesture Controller (debounce + watchdog fixes) ===
+#include <SpacebrewYun.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+#include <Audio.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SerialFlash.h>
+
+// ----------------- AUDIO SYSTEM (Stereo Pitch Shifting) -----------------
+AudioPlaySdWav     	playSdWav1;
+AudioEffectGranular	granularLeft;
+AudioEffectGranular	granularRight;
+AudioOutputI2S     	i2s1;
+
+// Patch: WAV L→granularLeft→L-out, WAV R→granularRight→R-out
+AudioConnection    	patchCord1(playSdWav1, 0, granularLeft, 0);
+AudioConnection    	patchCord2(playSdWav1, 1, granularRight, 0);
+AudioConnection    	patchCord3(granularLeft, 0, i2s1, 0);
+AudioConnection    	patchCord4(granularRight, 0, i2s1, 1);
+
+AudioControlSGTL5000   sgtl5000_1;
+
+#define SDCARD_CS_PIN BUILTIN_SDCARD
+#define GRAIN_MEMORY 12800
+int16_t granularMemoryL[GRAIN_MEMORY];
+int16_t granularMemoryR[GRAIN_MEMORY];
+
+// ----------------- GLOBAL VARIABLES -----------------
+bool isPlaying = false;
+float volumeLevel = 0.3;
+float pitchShift  = 1.0; // shared pitch for both channels
+const char *songs[] = {"song1.wav", "song2.wav", "song3.wav"};
+const int NUM_SONGS = sizeof(songs) / sizeof(songs[0]);
+int currentSong = 0;
+
+// ----------------- IMU -----------------
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire2);
+bool imuConnected = false;
+unsigned long lastImuSuccessfulRead = 0;
+
+// ----------------- TUNABLE FILTERS & THRESHOLDS -----------------
+const float ALPHA_ACCEL = 0.22f;
+const float ALPHA_GYRO  = 0.16f;
+
+const unsigned long IMU_POLL_MS = 12;
+const unsigned long DEBOUNCE_MS = 220;
+const unsigned long COMBO_WINDOW_MS = 600;
+
+const float GYRO_STILL_THRESH = 0.8f;
+const float GYRO_SMALL_THRESH = 3.0f;
+const float GYRO_LARGE_THRESH = 6.0f;
+
+const float LINEAR_THRESHOLD = 6.0f;
+const float GYRO_PREP_THRESH = 4.5f;
+const float GYRO_PUSH_THRESH = 7.0f;
+
+// ----------------- IIR filtered state (per-axis) -----------------
+struct Vec3 { float x; float y; float z; };
+Vec3 accelFilt = {0,0,0};
+Vec3 gyroFilt  = {0,0,0};
+
+// timing & watchdog
+unsigned long lastImuPoll = 0;
+unsigned long lastConfirmedGesture = 0;
+unsigned long lastGesturePrinted = 0;
+unsigned long lastPlayInvoked = 0;
+
+// combo state machine for pitch gestures
+enum ComboState { CS_IDLE=0, CS_PREP_DOWN=1, CS_PREP_UP=2 };
+ComboState comboState = CS_IDLE;
+unsigned long comboStartTime = 0;
+
+// gesture counter + watchdog reset (in case of BNO lock)
+int gestureCount = 0;
+const int MAX_GESTURES_BEFORE_RESET = 40; // if you see lockups sooner, drop this to 10
+
+// track whether granular initialized for current play
+bool granularInitializedForCurrentPlay = false;
+
+// ----------------- SETUP -----------------
+void setup() {
+  Serial.begin(115200);
+  delay(80);
+  Serial.println("=== Teensy Stereo Audio + IMU Gesture Controller (stable) ===");
+
+  // speed up I2C for Wire2 (BNO on Wire2)
+  Wire2.setClock(400000);
+
+  // --- IMU INIT ---
+  imuConnected = initBNO();
+  if (imuConnected) Serial.println("BNO055 IMU detected.");
+  else Serial.println("No BNO055 detected. IMU disabled.");
+
+  // --- AUDIO INIT ---
+  AudioMemory(30);
+  sgtl5000_1.enable();
+  sgtl5000_1.volume(volumeLevel);
+  granularLeft.begin(granularMemoryL, GRAIN_MEMORY);
+  granularRight.begin(granularMemoryR, GRAIN_MEMORY);
+
+  // --- SD CARD INIT ---
+  if (!SD.begin(SDCARD_CS_PIN)) {
+    Serial.println("SD Card init FAILED!");
+    while (1);
+  }
+
+  accelFilt = {0.0f, 0.0f, 0.0f};
+  gyroFilt  = {0.0f, 0.0f, 0.0f};
+
+  lastImuSuccessfulRead = millis();
+  Serial.println("Setup complete.");
+}
+
+// try to initialize BNO and set ext crystal
+bool initBNO() {
+  bool ok = bno.begin();
+  if (ok) {
+    // try to use external crystal if present
+    bno.setExtCrystalUse(true);
+    lastImuSuccessfulRead = millis();
+  }
+  return ok;
+}
+
+// ----------------- SONG HELPERS -----------------
+void playCurrentSong() {
+  Serial.print("Now playing: ");
+  Serial.println(songs[currentSong]);
+  if (playSdWav1.play(songs[currentSong])) {
+    isPlaying = true;
+    granularInitializedForCurrentPlay = false; // ensure granular init happens once
+    lastPlayInvoked = millis();
+  } else {
+    Serial.println("play() failed (file missing or SD issue).");
+  }
+}
+
+void ensureGranularInit() {
+  if (!granularInitializedForCurrentPlay && isPlaying) {
+    granularLeft.beginPitchShift(20);
+    granularRight.beginPitchShift(20);
+    granularLeft.setSpeed(pitchShift);
+    granularRight.setSpeed(pitchShift);
+    granularInitializedForCurrentPlay = true;
+  }
+}
+
+void nextSong() {
+  playSdWav1.stop();
+  isPlaying = false;
+  currentSong = (currentSong + 1) % NUM_SONGS;
+  playCurrentSong();
+}
+
+// ----------------- FILTERS -----------------
+inline float iirf(float prev, float sample, float alpha) {
+  return alpha * sample + (1.0f - alpha) * prev;
+}
+
+inline void updateFilters(const sensors_event_t &lin, const sensors_event_t &gyr) {
+  accelFilt.x = iirf(accelFilt.x, lin.acceleration.x, ALPHA_ACCEL);
+  accelFilt.y = iirf(accelFilt.y, lin.acceleration.y, ALPHA_ACCEL);
+  accelFilt.z = iirf(accelFilt.z, lin.acceleration.z, ALPHA_ACCEL);
+
+  gyroFilt.x  = iirf(gyroFilt.x,  gyr.gyro.x, ALPHA_GYRO);
+  gyroFilt.y  = iirf(gyroFilt.y,  gyr.gyro.y, ALPHA_GYRO);
+  gyroFilt.z  = iirf(gyroFilt.z,  gyr.gyro.z, ALPHA_GYRO);
+}
+
+inline float gyroMagL1() { return fabs(gyroFilt.x) + fabs(gyroFilt.y) + fabs(gyroFilt.z); }
+inline float accelMagL1() { return fabs(accelFilt.x) + fabs(accelFilt.y) + fabs(accelFilt.z); }
+
+// ----------------- DEBOUNCE helpers (non-destructive + confirm) -----------------
+bool readyForGesture() {
+  return (millis() - lastConfirmedGesture) >= DEBOUNCE_MS;
+}
+void confirmGesture() {
+  lastConfirmedGesture = millis();
+  gestureCount++;
+}
+
+// ----------------- GESTURE HELPERS -----------------
+void handleLinearGestures(int caseNum) {
+  // Only accept linear gestures if rotation is small
+  float gmag = gyroMagL1();
+  if (gmag > GYRO_SMALL_THRESH) return;
+
+  // dominant axis
+  float ax = accelFilt.x, ay = accelFilt.y, az = accelFilt.z;
+  float absx = fabs(ax), absy = fabs(ay), absz = fabs(az);
+
+  if (absx > absz && absx > absy && absx > LINEAR_THRESHOLD) {
+    if (!readyForGesture()) return;
+    confirmGesture();
+    if (ax > 0) {
+      Serial.println("Linear: X+ -> Treble/Echo++");
+    } else {
+      Serial.println("Linear: X- -> Treble/Echo--");
+    }
+  } else if (absy > absx && absy > absz && absy > LINEAR_THRESHOLD) {
+    if (!readyForGesture()) return;
+    confirmGesture();
+    if (ay > 0) {
+      Serial.println("Linear: Y+ -> Reverb++");
+    } else {
+      Serial.println("Linear: Y- -> Reverb--");
+    }
+  } else if (absz > absx && absz > absy && absz > LINEAR_THRESHOLD) {
+    if (!readyForGesture()) return;
+    confirmGesture();
+    if (az > 0) {
+      Serial.println("Linear: Z+ -> Next song");
+      nextSong();
+    } else {
+      Serial.println("Linear: Z- -> Prev song");
+      // implement prevSong() if desired
+    }
+  }
+}
+
+void handleGyroCombo() {
+  unsigned long now = millis();
+  float pitchRate = gyroFilt.y;
+  float rollRate  = gyroFilt.x;
+  float gmag = gyroMagL1();
+
+  // If rotation tiny, gracefully reset combo if timed out
+  if (gmag < GYRO_SMALL_THRESH) {
+    if (comboState != CS_IDLE && (now - comboStartTime) > COMBO_WINDOW_MS) comboState = CS_IDLE;
+    return;
+  }
+
+  switch (comboState) {
+    case CS_IDLE:
+      if (pitchRate < -GYRO_PREP_THRESH) {
+        comboState = CS_PREP_DOWN;
+        comboStartTime = now;
+      } else if (pitchRate > GYRO_PREP_THRESH) {
+        comboState = CS_PREP_UP;
+        comboStartTime = now;
+      }
+      break;
+
+    case CS_PREP_DOWN:
+      if ((now - comboStartTime) <= COMBO_WINDOW_MS) {
+        if (pitchRate > GYRO_PUSH_THRESH && readyForGesture()) {
+          // confirm and do pitch up
+          confirmGesture();
+          pitchShift += 0.1f;
+          if (pitchShift > 2.5f) pitchShift = 2.5f;
+          granularLeft.setSpeed(pitchShift);
+          granularRight.setSpeed(pitchShift);
+          Serial.printf("Combo: Pitch UP -> %.2f\n", pitchShift);
+          comboState = CS_IDLE;
+        }
+      } else comboState = CS_IDLE;
+      break;
+
+    case CS_PREP_UP:
+      if ((now - comboStartTime) <= COMBO_WINDOW_MS) {
+        if (pitchRate < -GYRO_PUSH_THRESH && readyForGesture()) {
+          confirmGesture();
+          pitchShift -= 0.1f;
+          if (pitchShift < 0.3f) pitchShift = 0.3f;
+          granularLeft.setSpeed(pitchShift);
+          granularRight.setSpeed(pitchShift);
+          Serial.printf("Combo: Pitch DOWN -> %.2f\n", pitchShift);
+          comboState = CS_IDLE;
+        }
+      } else comboState = CS_IDLE;
+      break;
+  }
+
+  // quick volume action via large roll (single-axis)
+  if (fabs(rollRate) > GYRO_LARGE_THRESH && readyForGesture()) {
+    confirmGesture();
+    if (rollRate > 0) {
+      // volume up
+      volumeLevel = min(1.0f, volumeLevel + 0.05f);
+      sgtl5000_1.volume(volumeLevel);
+      Serial.printf("Roll: Volume ++ -> %.2f\n", volumeLevel);
+    } else {
+      volumeLevel = max(0.0f, volumeLevel - 0.05f);
+      sgtl5000_1.volume(volumeLevel);
+      Serial.printf("Roll: Volume -- -> %.2f\n", volumeLevel);
+    }
+  }
+}
+
+// ----------------- MAIN LOOP -----------------
+void loop() {
+  unsigned long now = millis();
+  int caseNum = 0;
+
+  // Serial gestures from RPi
+  if (Serial.available()) {
+    int gesture = Serial.read();
+    switch (gesture) {
+      case 1:
+        if (!isPlaying) playCurrentSong();
+        caseNum = 1;
+        break;
+      case 2:
+        if (isPlaying) { playSdWav1.stop(); isPlaying = false; }
+        caseNum = 2;
+        break;
+      case 3:
+        caseNum = 3;
+        break;
+      case 4:
+        nextSong();
+        caseNum = 4;
+        break;
+      default:
+        break;
+    }
+  }
+
+  // if playing, ensure granular initialized once
+  if (isPlaying) ensureGranularInit();
+
+  // IMU poll loop
+  if (imuConnected && isPlaying && (now - lastImuPoll >= IMU_POLL_MS)) {
+    lastImuPoll = now;
+    sensors_event_t lin, gyro;
+    bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL);
+    bno.getEvent(&gyro, Adafruit_BNO055::VECTOR_GYROSCOPE);
+    // record successful read time
+    lastImuSuccessfulRead = now;
+
+    updateFilters(lin, gyro);
+
+    float gmag = gyroMagL1();
+    if (gmag <= GYRO_SMALL_THRESH) handleLinearGestures(caseNum);
+    else handleGyroCombo();
+  }
+
+  // IMU health watchdog: if no good IMU reads for a while, reinit
+  if (imuConnected && (millis() - lastImuSuccessfulRead > 5000UL)) {
+    Serial.println("IMU unresponsive for 5s — re-initializing BNO055.");
+    imuConnected = false;
+    // attempt re-init
+    delay(10);
+    imuConnected = initBNO();
+    if (!imuConnected) {
+      Serial.println("BNO re-init failed.");
+      // do not block; try again later
+    } else {
+      Serial.println("BNO re-init OK.");
+    }
+  }
+
+  // gesture watchdog: if many gestures executed, force a soft re-init of filters to avoid drift
+  if (gestureCount >= MAX_GESTURES_BEFORE_RESET) {
+    Serial.println("Gesture counter reached limit — resetting gesture state & filters.");
+    gestureCount = 0;
+    comboState = CS_IDLE;
+    accelFilt = {0,0,0}; gyroFilt = {0,0,0};
+    lastConfirmedGesture = millis();
+  }
+
+  // cooperative yield
+  yield();
+}
+
+
