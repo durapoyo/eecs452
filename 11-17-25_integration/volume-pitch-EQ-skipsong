@@ -1,0 +1,242 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+#include <Audio.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SerialFlash.h>
+#include "AudioFilterEqualizer_I16.h"
+
+// ----------------- AUDIO SYSTEM -----------------
+AudioPlaySdWav     	playSdWav1;
+AudioEffectGranular	granularLeft;
+AudioEffectGranular	granularRight;
+AudioFilterEqualizer  eq1;
+AudioOutputI2S     	i2s1;
+
+AudioConnection patch1(playSdWav1, 0, granularLeft, 0);
+AudioConnection patch2(playSdWav1, 1, granularRight, 0);
+AudioConnection patch3(granularLeft, 0, i2s1, 0);
+AudioConnection patch4(granularRight, 0, i2s1, 1);
+AudioConnection patch5(playSdWav1, 0, eq1, 0);
+AudioConnection patch6(eq1, 0, i2s1, 0);
+AudioConnection patch7(playSdWav1, 1, i2s1, 1);
+
+AudioControlSGTL5000 sgtl5000_1;
+
+#define SDCARD_CS_PIN BUILTIN_SDCARD
+#define GRAIN_MEMORY 12800
+int16_t granularMemoryL[GRAIN_MEMORY];
+int16_t granularMemoryR[GRAIN_MEMORY];
+
+// ----------------- GLOBAL VARIABLES -----------------
+bool isPlaying = false;
+bool eqMode = false;            
+float volumeLevel = 0.3;
+float pitchShift  = 1.0;        
+const char *songs[] = {"song1.wav", "song2.wav", "song3.wav"};
+const int NUM_SONGS = sizeof(songs) / sizeof(songs[0]);
+int currentSong = 0;
+
+// ----------------- IMU -----------------
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire2);
+bool imuConnected = false;
+unsigned long lastImuSuccessfulRead = 0;
+
+// ----------------- FILTERS -----------------
+const float ALPHA_ACCEL = 0.22f;
+const float ALPHA_GYRO  = 0.16f;
+struct Vec3 { float x; float y; float z; };
+Vec3 accelFilt = {0,0,0};
+Vec3 gyroFilt  = {0,0,0};
+
+// ----------------- TIMING / COOLDOWN -----------------
+const unsigned long IMU_POLL_MS = 12;
+const unsigned long GESTURE_COOLDOWN_MS = 500; 
+unsigned long lastConfirmedGesture = 0;
+
+// ----------------- EQ -----------------
+#define EQ_TAPS 200
+float32_t fBand[] = {200.0, 1200.0, 4000.0, 22050.0}; // Bass, Mid, Treble
+float32_t dbBand[] = {0.0, 0.0, 0.0, 0.0};
+float32_t scaleCoeff = 16384.0f;
+int16_t eqCoeffs[EQ_TAPS];
+
+// ----------------- IIR FILTER -----------------
+inline float iirf(float prev, float sample, float alpha) {
+  return alpha * sample + (1.0f - alpha) * prev;
+}
+
+inline void updateFilters(const sensors_event_t &lin, const sensors_event_t &gyr) {
+  accelFilt.x = iirf(accelFilt.x, lin.acceleration.x, ALPHA_ACCEL);
+  accelFilt.y = iirf(accelFilt.y, lin.acceleration.y, ALPHA_ACCEL);
+  accelFilt.z = iirf(accelFilt.z, lin.acceleration.z, ALPHA_ACCEL);
+
+  gyroFilt.x  = iirf(gyroFilt.x,  gyr.gyro.x, ALPHA_GYRO);
+  gyroFilt.y  = iirf(gyroFilt.y,  gyr.gyro.y, ALPHA_GYRO);
+  gyroFilt.z  = iirf(gyroFilt.z,  gyr.gyro.z, ALPHA_GYRO);
+}
+
+// ----------------- DEBOUNCE -----------------
+bool readyForGesture() {
+  return (millis() - lastConfirmedGesture) >= GESTURE_COOLDOWN_MS;
+}
+void confirmGesture() {
+  lastConfirmedGesture = millis();
+}
+
+// ----------------- SONG HELPERS -----------------
+void playCurrentSong() {
+  Serial.print("Now playing: ");
+  Serial.println(songs[currentSong]);
+  playSdWav1.play(songs[currentSong]);
+  granularLeft.begin(granularMemoryL, GRAIN_MEMORY);
+  granularRight.begin(granularMemoryR, GRAIN_MEMORY);
+  granularLeft.beginPitchShift(20);
+  granularRight.beginPitchShift(20);
+  granularLeft.setSpeed(pitchShift);
+  granularRight.setSpeed(pitchShift);
+  sgtl5000_1.volume(volumeLevel);
+  isPlaying = true;
+}
+
+void nextSong() {
+  playSdWav1.stop();
+  isPlaying = false;
+  currentSong = (currentSong + 1) % NUM_SONGS;
+  playCurrentSong();
+}
+
+// ----------------- EQ -----------------
+void buildEQ() {
+  uint16_t err = eq1.equalizerNew(
+    4, fBand, dbBand, EQ_TAPS, eqCoeffs, 60.0f, scaleCoeff
+  );
+  if(err) Serial.printf("EQ build error code %d\n", err);
+}
+
+// ----------------- VOLUME & PITCH -----------------
+void handleGyroControls() {
+    if (!readyForGesture()) return;
+
+    float changed = false;
+
+    // Volume → roll x
+    float rollRate = gyroFilt.x;
+    const float VOL_THRESH = 6.0;
+    if (rollRate > VOL_THRESH) { volumeLevel = min(1.0f, volumeLevel + 0.05f); changed = true; }
+    else if (rollRate < -VOL_THRESH) { volumeLevel = max(0.0f, volumeLevel - 0.05f); changed = true; }
+
+    if(changed) {
+      sgtl5000_1.volume(volumeLevel);
+      Serial.printf("Volume → %.2f\n", volumeLevel);
+      confirmGesture();
+    }
+
+    // Pitch → pitch y
+    changed = false;
+    float pitchRate = gyroFilt.y;
+    const float PITCH_THRESH = 6.0f;
+    if (pitchRate > PITCH_THRESH) { pitchShift += 0.05f; if(pitchShift>2.5f) pitchShift=2.5f; changed=true; }
+    else if (pitchRate < -PITCH_THRESH) { pitchShift -= 0.05f; if(pitchShift<0.3f) pitchShift=0.3f; changed=true; }
+
+    if(changed) {
+      granularLeft.setSpeed(pitchShift);
+      granularRight.setSpeed(pitchShift);
+      Serial.printf("Pitch → %.2f\n", pitchShift);
+      confirmGesture();
+    }
+}
+
+// ----------------- EQ CONTROL -----------------
+void handleEQControls() {
+    if (!readyForGesture()) return;
+
+    const float GYRO_THRESH = 6.0f;
+    const float ACCEL_THRESH = 1.0f;
+
+    bool changed = false;
+
+    // Bass → gyro X
+    if (gyroFilt.x > GYRO_THRESH) { dbBand[0] += 1.0f; changed = true; }
+    else if (gyroFilt.x < -GYRO_THRESH) { dbBand[0] -= 1.0f; changed = true; }
+
+    // Mid → gyro Y
+    if (gyroFilt.y > GYRO_THRESH) { dbBand[1] += 1.0f; changed = true; }
+    else if (gyroFilt.y < -GYRO_THRESH) { dbBand[1] -= 1.0f; changed = true; }
+
+    // Treble → accel X
+    if (accelFilt.x > ACCEL_THRESH) { dbBand[2] += 1.0f; changed = true; }
+    else if (accelFilt.x < -ACCEL_THRESH) { dbBand[2] -= 1.0f; changed = true; }
+
+    // Clamp
+    for(int i=0;i<3;i++) {
+        if(dbBand[i]>12.0f) dbBand[i]=12.0f;
+        if(dbBand[i]<-12.0f) dbBand[i]=-12.0f;
+    }
+
+    if(changed) {
+        buildEQ();
+        Serial.printf("EQ → Bass: %.1f, Mid: %.1f, Treble: %.1f\n", dbBand[0], dbBand[1], dbBand[2]);
+        confirmGesture();
+    }
+}
+
+// ----------------- SETUP -----------------
+void setup() {
+  Serial.begin(115200);
+  delay(80);
+  Serial.println("=== Teensy Stereo Audio + IMU Gesture Controller ===");
+
+  Wire2.setClock(400000);
+
+  // --- IMU INIT ---
+  imuConnected = bno.begin();
+  if (imuConnected) { bno.setExtCrystalUse(true); Serial.println("BNO055 IMU detected."); }
+  else Serial.println("No BNO055 detected.");
+
+  // --- AUDIO INIT ---
+  AudioMemory(30);
+  sgtl5000_1.enable();
+  sgtl5000_1.volume(volumeLevel);
+  granularLeft.begin(granularMemoryL, GRAIN_MEMORY);
+  granularRight.begin(granularMemoryR, GRAIN_MEMORY);
+
+  // --- SD INIT ---
+  if (!SD.begin(SDCARD_CS_PIN)) { Serial.println("SD Card init FAILED!"); while (1); }
+
+  buildEQ();
+}
+
+// ----------------- MAIN LOOP -----------------
+void loop() {
+  unsigned long now = millis();
+
+  // --- Serial gestures ---
+  if (Serial.available()) {
+      int gesture = Serial.read();
+      switch(gesture){
+        case 1: if(!isPlaying) { playCurrentSong(); eqMode=false; } break;
+        case 2: if(isPlaying) { playSdWav1.stop(); isPlaying=false; } break;
+        case 3: eqMode = true; Serial.println("EQ mode activated"); break;
+        case 4: nextSong(); break; // pointing up → next song
+      }
+  }
+
+  // --- IMU gestures ---
+  if(isPlaying && imuConnected && (now - lastImuSuccessfulRead > IMU_POLL_MS)){
+      lastImuSuccessfulRead = now;
+
+      sensors_event_t lin, gyr;
+      bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL);
+      bno.getEvent(&gyr, Adafruit_BNO055::VECTOR_GYROSCOPE);
+      updateFilters(lin, gyr);
+
+      if(eqMode) handleEQControls();
+      else handleGyroControls();
+  }
+}
+
+
+
