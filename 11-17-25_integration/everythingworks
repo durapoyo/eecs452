@@ -8,9 +8,13 @@
 #include <SerialFlash.h>
 
 
+
+
 // ---------- AUDIO (dual-deck + granular + mixer) ----------
-AudioPlaySdWav      playDeckA;
-AudioPlaySdWav      playDeckB;
+AudioPlaySdWav  	playDeckA;
+AudioPlaySdWav  	playDeckB;
+
+
 
 
 AudioEffectGranular granularAL; // Deck A left
@@ -19,15 +23,21 @@ AudioEffectGranular granularBL; // Deck B left
 AudioEffectGranular granularBR; // Deck B right
 
 
-AudioMixer4         mixer;      // channels: 0=A L, 1=A R, 2=B L, 3=B R
-AudioOutputI2S      i2s1;
+
+
+AudioMixer4     	mixer;  	// channels: 0=A L, 1=A R, 2=B L, 3=B R
+AudioOutputI2S  	i2s1;
 AudioControlSGTL5000 sgtl5000;
+
+
 
 
 AudioConnection c1(playDeckA, 0, granularAL, 0);
 AudioConnection c2(playDeckA, 1, granularAR, 0);
 AudioConnection c3(playDeckB, 0, granularBL, 0);
 AudioConnection c4(playDeckB, 1, granularBR, 0);
+
+
 
 
 // granular outputs -> mixer channels
@@ -37,9 +47,13 @@ AudioConnection c7(granularBL, 0, mixer, 2);
 AudioConnection c8(granularBR, 0, mixer, 3);
 
 
+
+
 // mixer -> i2s
 AudioConnection c9(mixer, 0, i2s1, 0);
 AudioConnection c10(mixer, 0, i2s1, 1);
+
+
 
 
 // ---------- SD / granular memory ----------
@@ -51,30 +65,42 @@ int16_t granularMemoryBL[GRAIN_MEMORY];
 int16_t granularMemoryBR[GRAIN_MEMORY];
 
 
+
+
 // ---------- GLOBALS ----------
 const char* playlist[] = {"song1.wav","song2.wav","song3.wav","song4.wav"};
 const int NUM_SONGS = sizeof(playlist)/sizeof(playlist[0]);
+
+
 
 
 int currentSongA = 0;
 int currentSongB = 1;
 
 
+
+
 bool isPlayingA = false;
 bool isPlayingB = false;
-bool mixerMode = false;       // when true: crossfade mode active and controls locked
-bool eqMode = false;          // reserved if you want to add EQ later
+bool mixerMode = false;   	// when true: crossfade mode active and controls locked
+bool eqMode = false;      	// reserved if you want to add EQ later
 
 
-float volumeLevel = 0.4f;     // master volume (locked in mixer mode)
-float pitchA = 1.0f;          // playback speed deck A (locked in mixer mode)
-float pitchB = 1.0f;          // playback speed deck B (locked in mixer mode)
+
+
+float volumeLevel = 0.4f; 	// master volume (locked in mixer mode)
+float pitchA = 1.0f;      	// playback speed deck A (locked in mixer mode)
+float pitchB = 1.0f;      	// playback speed deck B (locked in mixer mode)
+
+
 
 
 // ---------- IMU ----------
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire2);
 bool imuConnected = false;
 unsigned long lastImuSuccessfulRead = 0;
+
+
 
 
 // ---------- FILTERS ----------
@@ -85,10 +111,14 @@ Vec3 accelFilt = {0,0,0};
 Vec3 gyroFilt  = {0,0,0};
 
 
+
+
 // ---------- TIMING / DEBOUNCE ----------
 const unsigned long IMU_POLL_MS = 12;
 const unsigned long GESTURE_COOLDOWN_MS = 500;
 unsigned long lastGestureTime = 0;
+
+
 
 
 inline float iirf(float prev, float sample, float alpha) {
@@ -100,14 +130,20 @@ inline void updateFilters(const sensors_event_t &lin, const sensors_event_t &gyr
   accelFilt.z = iirf(accelFilt.z, lin.acceleration.z, ALPHA_ACCEL);
 
 
+
+
   gyroFilt.x  = iirf(gyroFilt.x,  gyr.gyro.x, ALPHA_GYRO);
   gyroFilt.y  = iirf(gyroFilt.y,  gyr.gyro.y, ALPHA_GYRO);
   gyroFilt.z  = iirf(gyroFilt.z,  gyr.gyro.z, ALPHA_GYRO);
 }
 
 
+
+
 bool readyForGesture() { return (millis() - lastGestureTime) >= GESTURE_COOLDOWN_MS; }
 void confirmGesture() { lastGestureTime = millis(); }
+
+
 
 
 // ---------- PLAYBACK HELPERS ----------
@@ -125,6 +161,8 @@ void startDeckA(int idx) {
 }
 
 
+
+
 void startDeckB(int idx) {
   currentSongB = idx % NUM_SONGS;
   playDeckB.play(playlist[currentSongB]);
@@ -139,6 +177,8 @@ void startDeckB(int idx) {
 }
 
 
+
+
 void stopDeckA() {
   playDeckA.stop();
   isPlayingA = false;
@@ -151,6 +191,8 @@ void stopDeckB() {
 }
 
 
+
+
 void nextSongA() {
   stopDeckA();
   startDeckA((currentSongA + 1) % NUM_SONGS);
@@ -159,6 +201,8 @@ void nextSongB() {
   stopDeckB();
   startDeckB((currentSongB + 1) % NUM_SONGS);
 }
+
+
 
 
 // ---------- MIXER / GESTURE (Crossfade using accel Y) ----------
@@ -172,6 +216,8 @@ void focusDeckA() {
 }
 
 
+
+
 void focusDeckB() {
   // B louder, A quieter
   mixer.gain(0, 0.2f);
@@ -180,6 +226,8 @@ void focusDeckB() {
   mixer.gain(3, 0.9f);
   Serial.println("Focus → Deck B");
 }
+
+
 
 
 void centerMix() {
@@ -192,18 +240,22 @@ void centerMix() {
 }
 
 
+
+
 void handleLinearGesturesForCrossfade() {
   if (!readyForGesture()) return;
   float y = accelFilt.y;
   const float THRESH = 6.0f;
   if (y > THRESH) {
-    focusDeckB();
-    confirmGesture();
+	focusDeckB();
+	confirmGesture();
   } else if (y < -THRESH) {
-    focusDeckA();
-    confirmGesture();
+	focusDeckA();
+	confirmGesture();
   }
 }
+
+
 
 
 // ---------- GYRO CONTROLS (volume & pitch) - only if NOT in mixerMode ----------
@@ -212,23 +264,29 @@ void handleGyroControls() {
   bool changed = false;
 
 
+
+
   // Volume -> roll (gyro x)
   const float VOL_THRESH = 6.0f;
   float rollRate = gyroFilt.x;
   if (rollRate > VOL_THRESH) {
-    volumeLevel = min(1.0f, volumeLevel + 0.05f);
-    changed = true;
+	volumeLevel = min(1.0f, volumeLevel + 0.05f);
+	changed = true;
   } else if (rollRate < -VOL_THRESH) {
-    volumeLevel = max(0.0f, volumeLevel - 0.05f);
-    changed = true;
+	volumeLevel = max(0.0f, volumeLevel - 0.05f);
+	changed = true;
   }
+
+
 
 
   if (changed) {
-    sgtl5000.volume(volumeLevel);
-    Serial.printf("Volume -> %.2f\n", volumeLevel);
-    confirmGesture();
+	sgtl5000.volume(volumeLevel);
+	Serial.printf("Volume -> %.2f\n", volumeLevel);
+	confirmGesture();
   }
+
+
 
 
   // Pitch -> gyro y (affects both decks equally in this merged design)
@@ -236,27 +294,31 @@ void handleGyroControls() {
   const float PITCH_THRESH = 6.0f;
   float pitchRate = gyroFilt.y;
   if (pitchRate > PITCH_THRESH) {
-    pitchA += 0.05f; pitchB += 0.05f;
-    if (pitchA > 2.5f) pitchA = 2.5f;
-    if (pitchB > 2.5f) pitchB = 2.5f;
-    changed = true;
+	pitchA += 0.05f; pitchB += 0.05f;
+	if (pitchA > 2.5f) pitchA = 2.5f;
+	if (pitchB > 2.5f) pitchB = 2.5f;
+	changed = true;
   } else if (pitchRate < -PITCH_THRESH) {
-    pitchA -= 0.05f; pitchB -= 0.05f;
-    if (pitchA < 0.3f) pitchA = 0.3f;
-    if (pitchB < 0.3f) pitchB = 0.3f;
-    changed = true;
+	pitchA -= 0.05f; pitchB -= 0.05f;
+	if (pitchA < 0.3f) pitchA = 0.3f;
+	if (pitchB < 0.3f) pitchB = 0.3f;
+	changed = true;
   }
+
+
 
 
   if (changed) {
-    granularAL.setSpeed(pitchA);
-    granularAR.setSpeed(pitchA);
-    granularBL.setSpeed(pitchB);
-    granularBR.setSpeed(pitchB);
-    Serial.printf("Pitch -> A: %.2f, B: %.2f\n", pitchA, pitchB);
-    confirmGesture();
+	granularAL.setSpeed(pitchA);
+	granularAR.setSpeed(pitchA);
+	granularBL.setSpeed(pitchB);
+	granularBR.setSpeed(pitchB);
+	Serial.printf("Pitch -> A: %.2f\n", pitchA);
+	confirmGesture();
   }
 }
+
+
 
 
 // ---------- SETUP ----------
@@ -266,17 +328,23 @@ void setup() {
   Serial.println("=== Unified Dual-Deck DJ (Mixer + Granular) ===");
 
 
+
+
   Wire2.setClock(400000);
+
+
 
 
   // IMU init
   imuConnected = bno.begin();
   if (imuConnected) {
-    bno.setExtCrystalUse(true);
-    Serial.println("BNO055 detected");
+	bno.setExtCrystalUse(true);
+	Serial.println("BNO055 detected");
   } else {
-    Serial.println("No BNO055 detected");
+	Serial.println("No BNO055 detected");
   }
+
+
 
 
   // Audio init
@@ -285,8 +353,12 @@ void setup() {
   sgtl5000.volume(volumeLevel);
 
 
+
+
   // initialize mixer gains (center)
   centerMix();
+
+
 
 
   // granular memory init (not necessary to call begin here but safe)
@@ -296,12 +368,16 @@ void setup() {
   granularBR.begin(granularMemoryBR, GRAIN_MEMORY);
 
 
+
+
   // SD init
   if (!SD.begin(SDCARD_CS_PIN)) {
-    Serial.println("SD init FAILED!");
-    while (1);
+	Serial.println("SD init FAILED!");
+	while (1);
   }
 }
+
+
 
 
 // ---------- MAIN LOOP ----------
@@ -309,72 +385,93 @@ void loop() {
   unsigned long now = millis();
 
 
+
+
   // --- Serial/RPi gestures ---
   if (Serial.available()) {
-    int gesture = Serial.read();
-    switch (gesture) {
-      case 1: // open palm -> start Deck A (and ensure Deck B queued)
-        if (!isPlayingA) startDeckA(currentSongA);
-        // if in mixer mode, also ensure deck B is playing
-        if (mixerMode && !isPlayingB) startDeckB(currentSongB);
-        break;
-      case 2: // closed fist -> stop Deck A
-        if (isPlayingA) stopDeckA();
-        break;
-      case 4: // pointing up -> next song on Deck A
-        nextSongA();
-        break;
-      case 5: // thumbs up -> toggle mixer mode
-        mixerMode = !mixerMode;
-        if (mixerMode) {
-          Serial.println("🎚 Mixer Mode ON (controls locked)");
-          // start Deck B if not playing and choose next track
-          if (!isPlayingB) {
-            currentSongB = (currentSongA + 1) % NUM_SONGS;
-            startDeckB(currentSongB);
-          }
-          // center mix when entering or keep last crossfade? choose center
-          centerMix();
-        } else {
-          Serial.println("🎚 Mixer Mode OFF (controls unlocked)");
-          // stopping deck B when leaving mixer mode is optional; keep it playing
-          // you can choose to stop deck B: stopDeckB();
-        }
-        break;
-      case 6: // stop Deck B
-        if (isPlayingB) stopDeckB();
-        break;
-      case 7: // next song on Deck B
-        nextSongB();
-        break;
-    }
+	int gesture = Serial.read();
+	switch (gesture) {
+  	case 1: // open palm -> start Deck A (and ensure Deck B queued)
+    	if (!isPlayingA) startDeckA(currentSongA);
+    	// if in mixer mode, also ensure deck B is playing
+    	if (mixerMode && !isPlayingB) startDeckB(currentSongB);
+    	break;
+  	case 2: // closed fist -> stop Deck A
+    	if (isPlayingA) stopDeckA();
+    	break;
+  	case 4: // pointing up -> next song on Deck A
+    	nextSongA();
+    	break;
+  	case 5: // thumbs up -> toggle mixer mode
+    	mixerMode = !mixerMode;
+    	if (mixerMode) {
+      	Serial.println("Mixer Mode ON (controls locked)");
+      	// start Deck B if not playing and choose next track
+      	if (!isPlayingB) {
+        	currentSongB = (currentSongA + 1) % NUM_SONGS;
+        	startDeckB(currentSongB);
+      	}
+      	// center mix when entering or keep last crossfade? choose center
+      	centerMix();
+    	} else {
+      	Serial.println("Mixer Mode OFF (controls unlocked)");
+      	if (isPlayingB) stopDeckB();
+        	mixer.gain(0, 0.8f);
+        	mixer.gain(1, 0.8f);
+        	mixer.gain(2, 0.0f);
+        	mixer.gain(3, 0.0f);
+    	}
+    	break;
+  	case 6: // stop Deck B
+    	if (isPlayingB) stopDeckB();
+    	break;
+  	case 7: // next song on Deck B
+    	nextSongB();
+    	break;
+	}
   }
+
+
 
 
   // --- IMU gestures ---
   if (imuConnected && (now - lastImuSuccessfulRead > IMU_POLL_MS)) {
-    lastImuSuccessfulRead = now;
-    sensors_event_t lin, gyr;
-    bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL);
-    bno.getEvent(&gyr, Adafruit_BNO055::VECTOR_GYROSCOPE);
-    Serial.printf("IMU:%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", lin.acceleration.x, lin.acceleration.y, lin.acceleration.z, gyr.gyro.x, gyr.gyro.y, gyr.gyro.z);
-    updateFilters(lin, gyr);
+	lastImuSuccessfulRead = now;
+	sensors_event_t lin, gyr;
+	bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL);
+	bno.getEvent(&gyr, Adafruit_BNO055::VECTOR_GYROSCOPE);
+	updateFilters(lin, gyr);
 
 
-    if (mixerMode) {
-      // While in mixer mode we only allow crossfade gestures (accel Y)
-      handleLinearGesturesForCrossfade();
-      // IMPORTANT: controls are locked -> do NOT call handleGyroControls()
-    } else {
-      // Not mixing: gyro controls change volume/pitch
-      handleGyroControls();
-    }
+
+
+	if (mixerMode) {
+  	// While in mixer mode we only allow crossfade gestures (accel Y)
+  	handleLinearGesturesForCrossfade();
+  	// IMPORTANT: controls are locked -> do NOT call handleGyroControls()
+	} else {
+  	// Not mixing: gyro controls change volume/pitch
+  	handleGyroControls();
+	}
   }
+
+
 
 
   // NOTE: additional housekeeping (track end detection, seamless deck sync etc.)
   // can be added later. This core loop handles start/stop, crossfade + pitch/volume.
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
