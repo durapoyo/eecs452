@@ -27,15 +27,15 @@ This project integrates:
     - Preloaded audio playback into SD card
 
 3. Raspberry Pi
-  - OpenCV for hand gesture classification
+    - OpenCV for hand gesture classification
 
 4. Modularity
 Each major component is modular:
-- Motion/gesture interpretation
-- DSP pipeline
-- Effect modules
-- GUI display
-- Communication layer
+    - Motion/gesture interpretation
+    - DSP pipeline
+    - Effect modules
+    - GUI display
+    - Communication layer
 This allows extendability for new filters, effects, or gestures
 
 ## Use cases
