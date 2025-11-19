@@ -1,548 +1,206 @@
-"""
-dj_gui_with_visuals.py
-A PyQt5 + pyqtgraph GUI for the Teensy dual-deck DJ.
-
-Features:
-- Deck A/B waveform previews (load local WAVs with same names as your Teensy SD playlist)
-- VU meter (uses GUI's volume + simulated per-deck levels)
-- Crossfade position indicator (0=A, 1=B)
-- IMU graphs (accel x,y,z and gyro x,y,z) - expects Teensy to print lines like:
-    IMU:ax,ay,az,gx,gy,gz
-- Serial commands:
-    Gesture bytes: 1,2,4,5,6,7
-    ASCII: "VOL 0.40\n", "PIT 1.00\n", "FA\n","FB\n","FC\n"
-"""
-
-import sys, os, wave, struct, math, time
-from collections import deque
-import numpy as np
+import sys
+import time
+import cv2
 import serial
-import serial.tools.list_ports
-
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QGroupBox, QSlider, QFileDialog, QFrame
-)
-from PyQt5.QtCore import Qt, QTimer
+import threading
+import numpy as np
+from pathlib import Path
+from PyQt5 import QtWidgets, QtCore
 import pyqtgraph as pg
+from picamera2 import Picamera2
+import mediapipe as mp
 
-# --------------------------
-# User playlist (matches Teensy)
-# --------------------------
-playlist = ["song1.wav", "song2.wav", "song3.wav", "song4.wav"]
-NUM_SONGS = len(playlist)
+# ============================================================
+# SERIAL SETUP
+# ============================================================
+try:
+    teensy = serial.Serial('/dev/ttyACM0', 115200, timeout=0)
+    print("Connected to Teensy")
+except Exception as e:
+    print("Serial Error:", e)
+    teensy = None
 
-# --------------------------
-# Serial / Teensy helpers
-# --------------------------
-def find_teensy_port():
-    ports = serial.tools.list_ports.comports()
-    for p in ports:
-        desc = (p.description or "").lower()
-        if "teensy" in desc or "usb serial" in desc or "arduino" in desc:
-            return p.device
-    # fallback: return first available USB serial if any
-    if ports:
-        return ports[0].device
-    return None
+last_sent_gesture = None
 
-class SerialManager:
-    def __init__(self):
-        self.ser = None
-        self.open()
+# ============================================================
+# GUI CLASS
+# ============================================================
+class DJGui(QtWidgets.QWidget):
 
-    def open(self):
-        port = find_teensy_port()
-        if port:
-            try:
-                self.ser = serial.Serial(port, 115200, timeout=0.05)
-                print("Serial open:", port)
-            except Exception as e:
-                print("Serial open failed:", e)
-                self.ser = None
-        else:
-            self.ser = None
-
-    def write_byte(self, b):
-        try:
-            if self.ser and self.ser.is_open:
-                self.ser.write(bytes([b]))
-        except Exception as e:
-            print("Serial write error:", e)
-            self.ser = None
-
-    def write_line(self, s):
-        try:
-            if self.ser and self.ser.is_open:
-                self.ser.write((s + "\n").encode())
-        except Exception as e:
-            print("Serial write error:", e)
-            self.ser = None
-
-    def read_lines(self):
-        if not self.ser or not self.ser.is_open:
-            return []
-        lines = []
-        try:
-            while True:
-                raw = self.ser.readline()
-                if not raw:
-                    break
-                try:
-                    lines.append(raw.decode(errors='ignore').strip())
-                except:
-                    pass
-        except Exception:
-            pass
-        return lines
-
-# --------------------------
-# Waveform loader utility
-# --------------------------
-def load_waveform(path, max_samples=20000):
-    """Return (times, amplitudes) normalized float32 arrays for plotting a preview."""
-    if not os.path.exists(path):
-        return np.array([0.0]), np.array([0.0])
-    try:
-        wf = wave.open(path, 'rb')
-        nchan = wf.getnchannels()
-        sampwidth = wf.getsampwidth()
-        nframes = wf.getnframes()
-        framerate = wf.getframerate()
-        # read a downsampled chunk for preview if large
-        to_read = min(nframes, max_samples)
-        raw = wf.readframes(to_read)
-        wf.close()
-        fmt = {1:'b', 2:'h', 4:'i'}.get(sampwidth, 'h')
-        total_samples = to_read * nchan
-        data = struct.unpack('<' + fmt*total_samples, raw)
-        # take first channel and normalize
-        data = np.array(data[0::nchan], dtype=np.float32)
-        # if we only read part of file, scale times accordingly
-        times = np.linspace(0, to_read / framerate, len(data))
-        # normalize amplitude to [-1,1]
-        maxv = np.max(np.abs(data)) or 1.0
-        data = data / maxv
-        return times, data
-    except Exception as e:
-        print("load_waveform error", e)
-        return np.array([0.0]), np.array([0.0])
-
-# --------------------------
-# Main GUI
-# --------------------------
-class DJGui(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dual-Deck DJ Controller — Visuals")
-        self.setMinimumSize(1100, 700)
 
-        # Serial manager
-        self.serial = SerialManager()
+        self.setWindowTitle("Teensy DJ Controller")
+        layout = QtWidgets.QVBoxLayout(self)
 
-        # internal state (keeps visuals in sync)
-        self.currentA = 0
-        self.currentB = 1
-        self.isPlayingA = False
-        self.isPlayingB = False
-        self.mixerMode = False
-        self.volumeLevel = 0.4   # 0..1
-        self.pitchA = 1.0
-        self.pitchB = 1.0
-        # mixer gains (gains 0..1). We'll maintain these locally; GUI crossfade controls change them
-        self.gains = [0.6, 0.6, 0.6, 0.6]  # A L, A R, B L, B R
+        # -------------------
+        # Waveform Panels
+        # -------------------
+        self.waveA = pg.PlotWidget(title="Deck A Waveform")
+        self.waveB = pg.PlotWidget(title="Deck B Waveform")
+        self.waveACurve = self.waveA.plot(pen='g')
+        self.waveBCurve = self.waveB.plot(pen='c')
 
-        # load waveforms
-        self.waveA = load_waveform(playlist[self.currentA])
-        self.waveB = load_waveform(playlist[self.currentB])
+        layout.addWidget(self.waveA)
+        layout.addWidget(self.waveB)
 
-        # IMU circular buffers
-        self.imu_len = 500
-        self.accel = [deque([0.0]*self.imu_len, maxlen=self.imu_len) for _ in range(3)]
-        self.gyro  = [deque([0.0]*self.imu_len, maxlen=self.imu_len) for _ in range(3)]
+        # -------------------
+        # Volume Meter
+        # -------------------
+        self.volumeBar = QtWidgets.QProgressBar()
+        self.volumeBar.setRange(0, 100)
+        self.volumeBar.setFormat("Volume: %p%")
+        layout.addWidget(self.volumeBar)
 
-        self.init_ui()
+        # -------------------
+        # Crossfade Position
+        # -------------------
+        self.crossfadeSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.crossfadeSlider.setRange(0, 100)
+        self.crossfadeSlider.setEnabled(False)
+        layout.addWidget(self.crossfadeSlider)
 
-        # periodic update timers
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.periodic_update)
-        self.timer.start(40)   # 25 Hz UI update
+        # -------------------
+        # IMU Graphs
+        # -------------------
+        self.imuPlot = pg.PlotWidget(title="IMU Data (Accel Y & Gyro X)")
+        self.accelCurve = self.imuPlot.plot(pen='y')
+        self.gyroCurve = self.imuPlot.plot(pen='r')
+        layout.addWidget(self.imuPlot)
 
-    def init_ui(self):
-        root = QHBoxLayout(self)
+        self.accelHistory = []
+        self.gyroHistory = []
 
-        # Left column: controls + meters
-        left_v = QVBoxLayout()
-        left_v.setSpacing(8)
+        # update timer
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.update_gui)
+        self.timer.start(30)
 
-        # IMU status label
-        self.imu_label = QLabel("IMU: Not Connected")
-        left_v.addWidget(self.imu_label)
+    # ------------------------------------------------------------
+    # GUI UPDATE
+    # ------------------------------------------------------------
+    def update_gui(self):
+        """Update curves based on latest telemetry."""
+        global latest_accel_y, latest_gyro_x
+        global latest_crossfade, latest_volume
 
-        # Deck controls
-        deck_box = QGroupBox("Deck Controls")
-        deck_layout = QGridLayout()
-        deck_layout.setHorizontalSpacing(6)
-        # Deck A
-        btnAstart = QPushButton("Start A (1)")
-        btnAstop  = QPushButton("Stop A (2)")
-        btnAnext  = QPushButton("Next A (4)")
-        btnAstart.clicked.connect(lambda: self.cmd_start_a())
-        btnAstop.clicked.connect(lambda: self.cmd_stop_a())
-        btnAnext.clicked.connect(lambda: self.cmd_next_a())
+        # IMU plots
+        self.accelHistory.append(latest_accel_y)
+        self.gyroHistory.append(latest_gyro_x)
 
-        deck_layout.addWidget(QLabel("Deck A"), 0, 0)
-        deck_layout.addWidget(btnAstart, 0, 1)
-        deck_layout.addWidget(btnAstop, 0, 2)
-        deck_layout.addWidget(btnAnext, 0, 3)
+        if len(self.accelHistory) > 200:
+            self.accelHistory = self.accelHistory[-200:]
+            self.gyroHistory = self.gyroHistory[-200:]
 
-        # Deck B
-        btnBstart = QPushButton("Start B (via Mixer)")
-        btnBstop  = QPushButton("Stop B (6)")
-        btnBnext  = QPushButton("Next B (7)")
-        btnBstop.clicked.connect(lambda: self.cmd_byte(6))
-        btnBnext.clicked.connect(lambda: self.cmd_byte(7))
-        deck_layout.addWidget(QLabel("Deck B"), 1, 0)
-        deck_layout.addWidget(btnBstart, 1, 1)
-        deck_layout.addWidget(btnBstop, 1, 2)
-        deck_layout.addWidget(btnBnext, 1, 3)
+        self.accelCurve.setData(self.accelHistory)
+        self.gyroCurve.setData(self.gyroHistory)
 
-        deck_box.setLayout(deck_layout)
-        left_v.addWidget(deck_box)
+        # Volume meter
+        self.volumeBar.setValue(int(latest_volume * 100))
 
-        # Mixer / Crossfade controls
-        mixer_box = QGroupBox("Mixer / Crossfade")
-        mix_layout = QVBoxLayout()
-        toggle_mixer = QPushButton("Toggle Mixer Mode (5)")
-        toggle_mixer.clicked.connect(self.toggle_mixer)
-        mix_layout.addWidget(toggle_mixer)
+        # Crossfade slider
+        self.crossfadeSlider.setValue(int(latest_crossfade * 100))
 
-        cross_layout = QHBoxLayout()
-        btn_focusA = QPushButton("Focus A")
-        btn_focusB = QPushButton("Focus B")
-        btn_center = QPushButton("Center")
-        btn_focusA.clicked.connect(self.focus_deck_a_manual)
-        btn_focusB.clicked.connect(self.focus_deck_b_manual)
-        btn_center.clicked.connect(self.center_mix_manual)
-        cross_layout.addWidget(btn_focusA)
-        cross_layout.addWidget(btn_center)
-        cross_layout.addWidget(btn_focusB)
-        mix_layout.addLayout(cross_layout)
+        # Dummy waveforms (replace with real audio FFT later)
+        t = np.linspace(0, 1, 300)
+        self.waveACurve.setData(np.sin(2*np.pi*3*t))
+        self.waveBCurve.setData(np.sin(2*np.pi*5*t))
 
-        # crossfade position indicator (0..1)
-        self.cross_label = QLabel("Crossfade: 0.50")
-        mix_layout.addWidget(self.cross_label)
-        mixer_box.setLayout(mix_layout)
-        left_v.addWidget(mixer_box)
 
-        # Volume & pitch sliders
-        control_box = QGroupBox("Volume & Pitch")
-        ctl_layout = QGridLayout()
-        vol_label = QLabel("Master Volume")
-        self.vol_slider = QSlider(Qt.Horizontal)
-        self.vol_slider.setRange(0, 100)
-        self.vol_slider.setValue(int(self.volumeLevel*100))
-        self.vol_slider.valueChanged.connect(self.vol_changed)
+# ============================================================
+# TELEMETRY PARSER THREAD
+# ============================================================
+latest_accel_y = 0
+latest_gyro_x = 0
+latest_volume = 0
+latest_crossfade = 0
 
-        pitch_label = QLabel("Pitch (A & B)")
-        self.pitch_slider = QSlider(Qt.Horizontal)
-        self.pitch_slider.setRange(30, 250)
-        self.pitch_slider.setValue(int(self.pitchA*100))
-        self.pitch_slider.valueChanged.connect(self.pitch_changed)
+def serial_reader():
+    global latest_accel_y, latest_gyro_x
+    global latest_volume, latest_crossfade
 
-        ctl_layout.addWidget(vol_label, 0, 0)
-        ctl_layout.addWidget(self.vol_slider, 0, 1)
-        ctl_layout.addWidget(pitch_label, 1, 0)
-        ctl_layout.addWidget(self.pitch_slider, 1, 1)
-        control_box.setLayout(ctl_layout)
-        left_v.addWidget(control_box)
+    while True:
+        if teensy and teensy.in_waiting:
+            line = teensy.readline().decode(errors='ignore').strip()
+            if line.startswith("IMU:"):
+                parts = line.split(",")
+                latest_accel_y = float(parts[2])
+                latest_gyro_x = float(parts[4])
+            elif line.startswith("AUDIO:"):
+                parts = line.split(",")
+                latest_volume = float(parts[1])
+                latest_crossfade = float(parts[3])
+        time.sleep(0.005)
 
-        # VU Meter (simple vertical bar)
-        vu_box = QGroupBox("VU Meter (master)")
-        vu_layout = QVBoxLayout()
-        self.vu_frame = QFrame()
-        self.vu_frame.setFrameShape(QFrame.Box)
-        self.vu_frame.setMinimumHeight(160)
-        vu_layout.addWidget(self.vu_frame)
-        vu_box.setLayout(vu_layout)
-        left_v.addWidget(vu_box)
 
-        # file loader for local previews
-        load_btn = QPushButton("Load local playlist WAVs...")
-        load_btn.clicked.connect(self.load_local_wavs)
-        left_v.addWidget(load_btn)
+# ============================================================
+# MEDIAPIPE CALLBACK
+# ============================================================
+def send_gesture_to_teensy(code):
+    global last_sent_gesture
+    if teensy and code != last_sent_gesture:
+        teensy.write(bytes([code]))
+        last_sent_gesture = code
+        print("Sent:", code)
 
-        left_v.addStretch()
-        root.addLayout(left_v, 1)
 
-        # Right column: graphs and waveforms
-        right_v = QVBoxLayout()
+def mp_callback(result, output_image, time_ms):
+    if result and result.gestures:
+        g = result.gestures[0][0].category_name
+        if g == "Open_Palm": send_gesture_to_teensy(1)
+        elif g == "Closed_Fist": send_gesture_to_teensy(2)
+        elif g == "Pointing_Up": send_gesture_to_teensy(4)
+        elif g == "Thumb_Up": send_gesture_to_teensy(5)
+        elif g == "Thumb_Down": send_gesture_to_teensy(6)
 
-        # Waveform panel
-        wave_group = QGroupBox("Waveforms & Positions")
-        wave_layout = QHBoxLayout()
 
-        # Deck A waveform
-        self.pgA = pg.PlotWidget(title="Deck A waveform")
-        self.pgA.setMenuEnabled(False)
-        self.pgA.hideButtons()
-        self.pgA.plotItem.showGrid(True, True)
-        self.waveplotA = self.pgA.plot(pen=pg.mkPen(width=0.8))
-        self.playheadA = self.pgA.plot([0,0],[ -1,1 ], pen=pg.mkPen('r', width=1))
-        self.pos_slider_A = QSlider(Qt.Horizontal)
-        self.pos_slider_A.setRange(0, 1000)
-        self.pos_slider_A.valueChanged.connect(lambda v: None)  # just scrub visually
-        a_layout = QVBoxLayout()
-        a_layout.addWidget(self.pgA)
-        a_layout.addWidget(self.pos_slider_A)
-        containerA = QVBoxLayout()
-        containerA.addLayout(a_layout)
+# ============================================================
+# MAIN
+# ============================================================
+def main():
+    # Start serial thread
+    threading.Thread(target=serial_reader, daemon=True).start()
 
-        # Deck B waveform
-        self.pgB = pg.PlotWidget(title="Deck B waveform")
-        self.pgB.setMenuEnabled(False)
-        self.pgB.hideButtons()
-        self.pgB.plotItem.showGrid(True, True)
-        self.waveplotB = self.pgB.plot(pen=pg.mkPen(width=0.8))
-        self.playheadB = self.pgB.plot([0,0],[-1,1], pen=pg.mkPen('r', width=1))
-        self.pos_slider_B = QSlider(Qt.Horizontal)
-        self.pos_slider_B.setRange(0, 1000)
-        self.pos_slider_B.valueChanged.connect(lambda v: None)
-        b_layout = QVBoxLayout()
-        b_layout.addWidget(self.pgB)
-        b_layout.addWidget(self.pos_slider_B)
-
-        wave_layout.addLayout(a_layout, 1)
-        wave_layout.addLayout(b_layout, 1)
-        wave_group.setLayout(wave_layout)
-        right_v.addWidget(wave_group, 3)
-
-        # IMU graph area (6 lines)
-        imu_group = QGroupBox("IMU (accel + gyro)")
-        imu_layout = QHBoxLayout()
-        self.imu_accel_plot = pg.PlotWidget(title="Accel X,Y,Z")
-        self.imu_gyro_plot  = pg.PlotWidget(title="Gyro X,Y,Z")
-        self.imu_accel_plot.setYRange(-20,20)
-        self.imu_gyro_plot.setYRange(-500,500)
-        self.acc_lines = [
-            self.imu_accel_plot.plot(pen=pg.mkPen('r')),
-            self.imu_accel_plot.plot(pen=pg.mkPen('g')),
-            self.imu_accel_plot.plot(pen=pg.mkPen('b')),
-        ]
-        self.gyro_lines = [
-            self.imu_gyro_plot.plot(pen=pg.mkPen('r')),
-            self.imu_gyro_plot.plot(pen=pg.mkPen('g')),
-            self.imu_gyro_plot.plot(pen=pg.mkPen('b')),
-        ]
-        imu_layout.addWidget(self.imu_accel_plot)
-        imu_layout.addWidget(self.imu_gyro_plot)
-        imu_group.setLayout(imu_layout)
-        right_v.addWidget(imu_group, 2)
-
-        root.addLayout(right_v, 3)
-
-        # draw initial waveforms & VU
-        self.update_waveforms()
-        self.update_vu()
-
-    # -------------------------
-    # command helpers
-    # -------------------------
-    def cmd_byte(self, b):
-        self.serial.write_byte(b)
-
-    def cmd_start_a(self):
-        # send gesture byte 1
-        self.cmd_byte(1)
-        # update local state and ensure Deck B queued if in mixer mode
-        self.isPlayingA = True
-        if self.mixerMode and not self.isPlayingB:
-            # start deck B by simulating Teensy's behavior: send toggle? we'll ask user to start B via mixer
-            # but we send no extra byte here (Teensy starts B when mixer toggled on)
-            pass
-
-    def cmd_stop_a(self):
-        self.cmd_byte(2)
-        self.isPlayingA = False
-
-    def cmd_next_a(self):
-        self.cmd_byte(4)
-        # advance preview waveform locally
-        self.currentA = (self.currentA + 1) % NUM_SONGS
-        self.waveA = load_waveform(playlist[self.currentA])
-        self.update_waveforms()
-
-    def toggle_mixer(self):
-        self.cmd_byte(5)
-        self.mixerMode = not self.mixerMode
-        # on entering mixer mode ensure deckB is started (Teensy does this); we simulate crossfade center
-        self.center_mix_manual()
-
-    def focus_deck_a_manual(self):
-        # manual crossfade: set gains favoring A
-        self.gains = [0.9, 0.9, 0.2, 0.2]
-        # send FA marker so Teensy can accept this manual command
-        self.serial.write_line("FA")
-        self.update_crossfade_label()
-
-    def focus_deck_b_manual(self):
-        self.gains = [0.2, 0.2, 0.9, 0.9]
-        self.serial.write_line("FB")
-        self.update_crossfade_label()
-
-    def center_mix_manual(self):
-        self.gains = [0.6,0.6,0.6,0.6]
-        self.serial.write_line("FC")
-        self.update_crossfade_label()
-
-    # -------------------------
-    # volume & pitch handlers
-    # -------------------------
-    def vol_changed(self, val):
-        self.volumeLevel = val / 100.0
-        self.serial.write_line(f"VOL {self.volumeLevel:.2f}")
-        self.update_vu()
-
-    def pitch_changed(self, val):
-        p = val / 100.0
-        self.pitchA = p; self.pitchB = p
-        self.serial.write_line(f"PIT {p:.2f}")
-
-    # -------------------------
-    # waveform & VU rendering
-    # -------------------------
-    def update_waveforms(self):
-        # Deck A
-        timesA, dataA = self.waveA if isinstance(self.waveA, tuple) else (np.array([0.0]), np.array([0.0]))
-        self.waveplotA.setData(timesA, dataA)
-        if len(timesA) > 1:
-            self.playheadA.setData([timesA[0], timesA[-1]], [0,0])  # initially center line at 0
-        # Deck B
-        timesB, dataB = self.waveB if isinstance(self.waveB, tuple) else (np.array([0.0]), np.array([0.0]))
-        self.waveplotB.setData(timesB, dataB)
-        if len(timesB) > 1:
-            self.playheadB.setData([timesB[0], timesB[-1]], [0,0])
-
-    def update_vu(self):
-        # draw a simple VU in the vu_frame by setting its stylesheet height; we will create a small pixmap-like bar using stylesheet
-        # compute perceived level as master volume * combined gain of active decks
-        # approximate deck level as average of their gains
-        levelA = (self.gains[0] + self.gains[1]) / 2.0
-        levelB = (self.gains[2] + self.gains[3]) / 2.0
-        # combined level weighted by which decks are playing
-        playA = 1.0 if self.isPlayingA else 0.0
-        playB = 1.0 if self.isPlayingB else 0.0
-        combined = (levelA * playA + levelB * playB) / max(playA+playB, 1.0)
-        # final dB-ish value (0..1)
-        vu = self.volumeLevel * combined
-        # style the frame background to show fill
-        height = int(160 * vu)
-        # create CSS for vertical fill from bottom
-        css = f"background: qlineargradient(x1:0, y1:1, x2:0, y2:0, stop:0 green, stop:{max(vu,0.05):.3f} yellow, stop:1 rgba(40,40,40,0.9));"
-        self.vu_frame.setStyleSheet(css)
-
-    # -------------------------
-    # serial parsing for IMU lines & other incoming messages
-    # -------------------------
-    def parse_serial_lines(self):
-        lines = self.serial.read_lines()
-        for L in lines:
-            if not L:
-                continue
-            # IMU line expected: IMU:ax,ay,az,gx,gy,gz
-            if L.startswith("IMU:") or L.startswith("imu:"):
-                try:
-                    payload = L.split(":")[1]
-                    vals = [float(x) for x in payload.split(",")]
-                    if len(vals) >= 6:
-                        ax, ay, az, gx, gy, gz = vals[:6]
-                        self.push_imu(ax, ay, az, gx, gy, gz)
-                except Exception as e:
-                    # ignore parse errors
-                    pass
-            # optional lines the Teensy might print like "BNO055 detected" or "Focus -> Deck A"
-            else:
-                # if the Teensy prints a line that is a single digit (1..7) we could treat as status, but skip
-                pass
-
-    def push_imu(self, ax, ay, az, gx, gy, gz):
-        self.accel[0].append(ax); self.accel[1].append(ay); self.accel[2].append(az)
-        self.gyro[0].append(gx);  self.gyro[1].append(gy);  self.gyro[2].append(gz)
-        self.imu_label.setText("IMU: Connected (live)")
-        # keep label green
-        self.imu_label.setStyleSheet("color: green; font-weight: bold;")
-
-    # -------------------------
-    # periodic update (timer)
-    # -------------------------
-    def periodic_update(self):
-        # try reconnect serial if disconnected
-        if not (self.serial.ser and self.serial.ser.is_open):
-            self.serial.open()
-            if self.serial.ser and self.serial.ser.is_open:
-                self.imu_label.setText("IMU: Connected")
-                self.imu_label.setStyleSheet("color: green; font-weight: bold;")
-            else:
-                self.imu_label.setText("IMU: Not Connected")
-                self.imu_label.setStyleSheet("color: black;")
-
-        # read serial lines (IMU) and parse
-        self.parse_serial_lines()
-
-        # update IMU plots
-        xs = np.arange(-self.imu_len+1, 1)
-        for i in range(3):
-            self.acc_lines[i].setData(xs, np.array(self.accel[i]))
-            self.gyro_lines[i].setData(xs, np.array(self.gyro[i]))
-
-        # update crossfade label from current gains (compute a single 0..1 crossfade)
-        left = (self.gains[0] + self.gains[1]) / 2.0
-        right = (self.gains[2] + self.gains[3]) / 2.0
-        # crossfade pos: 0 => full A, 1 => full B. normalize left/(left+right)
-        denom = left + right
-        pos = 0.5 if denom == 0 else (0.0 if denom==0 else right / denom)
-        self.cross_label.setText(f"Crossfade: {pos:.2f}")
-        self.update_vu()
-
-        # update waveplayhead positions using pos sliders (visual only; no local audio playback)
-        # compute time positions from sliders
-        # Deck A
-        if len(self.waveA[0])>1:
-            t0,t1 = self.waveA[0][0], self.waveA[0][-1]
-            fracA = self.pos_slider_A.value() / 1000.0
-            tposA = t0 + (t1 - t0) * fracA
-            self.playheadA.setData([tposA, tposA], [-1,1])
-        if len(self.waveB[0])>1:
-            t0,t1 = self.waveB[0][0], self.waveB[0][-1]
-            fracB = self.pos_slider_B.value() / 1000.0
-            tposB = t0 + (t1 - t0) * fracB
-            self.playheadB.setData([tposB, tposB], [-1,1])
-
-    # -------------------------
-    # load local WAVs if user wants to preview
-    # -------------------------
-    def load_local_wavs(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select folder containing playlist WAVs")
-        if not folder:
-            return
-        # try to find playlist files there
-        vals = []
-        for fname in playlist:
-            p = os.path.join(folder, fname)
-            if not os.path.exists(p):
-                print("Missing", p)
-            vals.append(p if os.path.exists(p) else fname)
-        # replace paths for wave A/B for preview
-        self.waveA = load_waveform(vals[self.currentA])
-        self.waveB = load_waveform(vals[self.currentB])
-        self.update_waveforms()
-
-# --------------------------
-# Entry point
-# --------------------------
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    pg.setConfigOptions(antialias=True)
+    # Build GUI
+    app = QtWidgets.QApplication(sys.argv)
     gui = DJGui()
     gui.show()
+
+    # Start MediaPipe thread
+    threading.Thread(target=run_mediapipe, daemon=True).start()
+
     sys.exit(app.exec_())
+
+
+# ============================================================
+# MEDIAPIPE LOOP
+# ============================================================
+def run_mediapipe():
+    BaseOptions = mp.tasks.BaseOptions
+    GestureRecognizer = mp.tasks.vision.GestureRecognizer
+    GestureRecognizerOptions = mp.tasks.vision.GestureRecognizerOptions
+    RunningMode = mp.tasks.vision.RunningMode
+    Image = mp.Image
+
+    opt = GestureRecognizerOptions(
+        base_options=BaseOptions(model_asset_path="gesture_recognizer.task"),
+        running_mode=RunningMode.LIVE_STREAM,
+        result_callback=mp_callback
+    )
+
+    with GestureRecognizer.create_from_options(opt) as recognizer:
+        picam2 = Picamera2()
+        picam2.configure(picam2.create_preview_configuration(
+            main={"format": "RGB888", "size": (320, 240)}))
+        picam2.start()
+
+        while True:
+            frame = picam2.capture_array()
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            recognizer.recognize_async(mp_image, int(time.time()*1000))
+
+
+# ============================================================
+if __name__ == "__main__":
+    main()
