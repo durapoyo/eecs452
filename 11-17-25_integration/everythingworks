@@ -357,6 +357,7 @@ void loop() {
     sensors_event_t lin, gyr;
     bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL);
     bno.getEvent(&gyr, Adafruit_BNO055::VECTOR_GYROSCOPE);
+    Serial.printf("IMU:%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", lin.acceleration.x, lin.acceleration.y, lin.acceleration.z, gyr.gyro.x, gyr.gyro.y, gyr.gyro.z);
     updateFilters(lin, gyr);
 
 
@@ -374,7 +375,6 @@ void loop() {
   // NOTE: additional housekeeping (track end detection, seamless deck sync etc.)
   // can be added later. This core loop handles start/stop, crossfade + pitch/volume.
 }
-
 
 
 
