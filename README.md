@@ -36,6 +36,7 @@ Each major component is modular:
     - Effect modules
     - GUI display
     - Communication layer
+
 This allows extendability for new filters, effects, or gestures
 
 ## Use cases
