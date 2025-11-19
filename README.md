@@ -14,17 +14,17 @@ This project integrates:
 
 ## Key Features
 1. Touch-Free Gesture Control
-Control audio using hand movements:
-- **Volume:** Roll wrist left and right
-- **Pitch:** Pitch wrist up and down
-- **Stop/Start:** Closed Fist/Open Palm
-- **Skip track:** Swipe right
+    Control audio using hand movements:
+    - **Volume:** Roll wrist left and right
+    - **Pitch:** Pitch wrist up and down
+    - **Stop/Start:** Closed Fist/Open Palm
+    - **Skip track:** Swipe right
 
 2. Teensy Audio
-- Low-latency granular synthesis
-- Pitch shifting
-- Adjustable effects
-- Preloaded audio playback into SD card
+    - Low-latency granular synthesis
+    - Pitch shifting
+    - Adjustable effects
+    - Preloaded audio playback into SD card
 
 3. Raspberry Pi
   - OpenCV for hand gesture classification
