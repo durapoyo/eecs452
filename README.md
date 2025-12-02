@@ -2,7 +2,7 @@
 
 ## Overview
 
-Our team built a **Gesture-Controlled DJ Board**, an interactive audio system that lets a user control music playback, volume, pitch, effects, and mixing through hand gestures.
+Traditional audio system interfaces like knowbs, sliders, switches, and foot pedals offer precise control but limit a performer's freedom and flexibility. Our project explores an alternate approach: using hand gestures as the primary method for amanipulating audio effects in real time. Our team built a **Gesture-Controlled DJ Board**, an interactive audio system that lets a user control music playback, volume, pitch, effects, and mixing through hand gestures.
 
 Using the Teensy 4.1 + Audio Shield, BNO055 IMU accelerometer, and a RaspberryPi, the board provides a cost-savvy, seamless, touch-free experience for those looking to manipulate and create live audio mixes without an actual DJ board :)
 
