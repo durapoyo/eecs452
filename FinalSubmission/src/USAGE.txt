@@ -1,0 +1,16 @@
+1. Start the Python Gesture-Recognition Host
+source ~/myenv/bin/activate
+python integration.py
+
+When launched, the script:
+- Opens the Raspberry Pi camera feed
+- Recognizes gestures using MediaPipe
+- Sends gesture codes to the Teensy over serial
+- A terminal will display recognized gestures and transmitted codes.
+
+2. Flash the Teensy
+- Open finalversionforreport.ino in the Arduino IDE.
+- Select board: Teensy 4.x
+- Verify and upload the sketch.
+- Once flashed, open:
+  Tools → Serial Monitor
