@@ -1,0 +1,27 @@
+On Raspberry Pi:
+- Python 3
+- Virtual environment (venv)
+- MediaPipe
+- OpenCV
+- Picamera2
+- PySerial
+
+to download gesture_recognizer.task: https://ai.google.dev/edge/mediapipe/solutions/vision/gesture_recognizer
+Python Libraries:  
+opencv-python>=4.7.0
+mediapipe>=0.10.0
+pyserial>=3.5
+picamera2>=0.8.0
+
+On Teensy:
+- Arduino IDE + Teensyduino
+- Teensy Audio Library
+- Adafruit BNO055 Library
+- SD and SPI libraries
+
+Hardware Wiring Setup:
+- Connect Teensy via USB to Raspberry Pi
+- Insert SD card with audio files
+- Ensure SGTL5000 audio shield is attached correctly
+- Connect speakers/headphones to audio output
+- Mount BNO055 IMU on I2C bus
