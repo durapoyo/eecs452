@@ -3,18 +3,17 @@ This project consists of two main source files:
 integration.py – The Python script responsible for hand gesture recognition using MediaPipe.
 finalversionforreport.ino – The Teensy microcontroller that runs on the device and performs the real-time embedded sound parameter effects.
 
-How the Files Work Together and Theory of Operation:
+How the Files Work Together:
 1. integration.py
   - Captures live video frames from the Raspberry Pi Camera (Picamera2) and processes them using MediaPipe’s Gesture Recognizer.
   - Performs real-time classification of hand gestures (Open Palm, Closed Fist, Victory, Pointing Up, Thumb Up, Thumb Down).
   - Converts each recognized gesture into a corresponding integer command code that represents a DJ interaction (e.g., play, stop, next song, toggle mixer mode, EQ mode, tempo mode)
   - Sends these integer codes over USB serial to the Teensy, but only when the gesture changes.
-  - Functions as the high-level perception system, offloading computationally heavy vision-based gesture recognition from the Teensy and acting as the primary control input for the audio engine.
   
 2. finalversionforreport.ino
   - Contains the embedded firmware compiled and uploaded to the Teensy.
   - Implements a dual-deck audio playback system using the Teensy Audio Library, including WAV playback, granular synthesis, a 4-channel mixer, and an SGTL5000 audio codec.
-  - Receives hand-gesture codes over serial (sent from integration.py), and each integer triggers a specific case in a gesture-control switch statement (e.g., start/stop Deck A, toggle mixer mode, next track, EQ mode, tempo mode, etc.).
+  - Receives hand-gesture codes over serial (sent from integration.py), and each integer triggers a specific case in a gesture-control switch statement (such as start/stop Deck A, toggle mixer mode, next track, EQ mode, tempo mode, etc.).
   - Uses the onboard BNO055 IMU to interpret accelerometer and gyroscope motions as additional gesture controls (e.g., crossfade between decks, change volume, change pitch, adjust EQ bands, tempo changes).
   - Continuously runs a real-time audio loop that:
     - Handles granular playback for both audio decks
