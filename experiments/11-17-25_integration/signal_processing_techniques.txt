@@ -1,0 +1,52 @@
+Signal Processing Techniques Used
+
+1. Embedded Systems (Teensy 4.1) - Source: `teensy_gui.ino`
+
+   A. Infinite Impulse Response (IIR) Filtering
+      - Technique: First-order Low Pass Filter (LPF).
+      - Implementation: Implemented as `y[n] = α * x[n] + (1 - α) * y[n-1]`.
+      - Code Reference:
+         - Helper function `iirf()` (Line 83).
+         - Applied in `updateFilters()` (Lines 86-98) to `accelFilt` and `gyroFilt` variables.
+      - Application: Smooths raw accelerometer and gyroscope data.
+
+   B. Granular Synthesis (Pitch Shifting)
+      - Technique: Granular Audio Processing.
+      - Implementation: `AudioEffectGranular` objects (`granularAL`, `granularAR`, etc.).
+      - Code Reference:
+         - Object declaration (Lines 16-19).
+         - Initialization: `granularAL.beginPitchShift(20)` (Lines 119-120, 133-134).
+         - Speed Control: `granularAL.setSpeed(pitchA)` (Lines 121, 252).
+      - Application: Real-time pitch shifting independent of playback duration.
+
+   C. Digital Audio Mixing
+      - Technique: Digital Summing and Gain Scaling.
+      - Implementation: `AudioMixer4` object.
+      - Code Reference:
+         - Gain control: `mixer.gain(channel, level)` inside `focusDeckA()` (Lines 167-170) and `focusDeckB()` (Lines 177-180).
+      - Application: Crossfading between Deck A and Deck B based on gesture input.
+
+   D. Sensor Fusion (Hardware Level)
+      - Technique: 9-DoF Sensor Fusion.
+      - Implementation: Adafruit BNO055 Hardware Fusion.
+      - Code Reference:
+         - Data retrieval: `bno.getEvent(&lin, Adafruit_BNO055::VECTOR_LINEARACCEL)` (Lines 358-359).
+      - Application: Gravity-compensated linear acceleration.
+
+2. Computer Vision & Host Processing (Raspberry Pi) - Source: `integrate_gui.py`
+
+   A. Machine Learning-based Gesture Recognition
+      - Technique: Graph-based Landmark Detection.
+      - Implementation: Google MediaPipe `GestureRecognizer`.
+      - Code Reference:
+         - Model Setup: `GestureRecognizerOptions` (Lines 136-140).
+         - Inference: `recognizer.recognize_async(mp_image, timestamp_ms)` (Line 163).
+      - Application: Classifying hand poses from video frames.
+
+   B. Image Preprocessing
+      - Technique: Color Space Conversion.
+      - Implementation: OpenCV.
+      - Code Reference:
+         - Conversion: `cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)` (Line 153).
+         - Flipping: `cv2.flip(frame, 1)` (Line 154).
+      - Application: Preparing camera frames for the MediaPipe model.
